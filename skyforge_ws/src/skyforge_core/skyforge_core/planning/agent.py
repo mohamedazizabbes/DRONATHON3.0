@@ -102,7 +102,11 @@ class PlannerAgent:
         return intercept_point(s["pos"], t.pos, t.vel, self.vg(s, t.pos))
 
     def duplicate_of(self, s, t: Track) -> Optional[str]:
-        """Served casualty this track probably is (re-detection after drift)."""
+        """Served casualty this track probably is (re-detection after drift).
+        A casualty seen WITH a delivered kit (IR strobe on the kit pod, visible
+        in FLIR) is served whatever its drift history."""
+        if t.attrs.get("marked"):
+            return "kit-marked"
         served = set(s.get("served_ids", []))
         for o in s.get("casualties", []):
             if o.id in served and o.id != t.id and o.floating == t.floating:

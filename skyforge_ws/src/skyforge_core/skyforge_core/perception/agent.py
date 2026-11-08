@@ -14,7 +14,8 @@ from typing import Optional
 
 from ..geometry import dist2, in_any_polygon
 from ..domain import DANGER_CLASSES, Cls, Detection, Start, Track, URGENCY, Zone
-from .drift import DriftKF, drift_prior
+from .drift import DriftKF
+from .sea_state import SeaStateEstimator
 from .projection import Camera, ground_sigma, in_view, pixel_to_ground
 from .start_triage import classify
 
@@ -45,6 +46,7 @@ class PerceptionAgent:
         self._new_confirmed: list[Track] = []
         self._t = 0.0
         self.wind = (0.0, 0.0)
+        self.sea = SeaStateEstimator(self.dp["current"], self.dp["k_leeway"], self.dp.get("sea_tau_s", 30.0))
         self.stats = {"frames": 0, "dets_in": 0, "dets_low_conf": 0, "dets_no_ground": 0, "tracks_created": 0, "tracks_deleted": 0}
 
     # ------------------------------------------------------------------ io
@@ -79,10 +81,31 @@ class PerceptionAgent:
         dt = now - self._t
         if dt <= 0:
             return
+        # re-centre floating tracks on the current sea-state estimate: unseen ones
+        # follow a changing current instead of keeping a stale velocity
+        prior = self.sea.prior(self.wind)
+        a = 1.0 - math.exp(-dt / max(self.dp.get("sea_tau_s", 30.0), 1e-3))
         for s in self._tracks.values():
+            if s.kf.floating:
+                s.kf.prior = prior
+                if now - s.track.last_seen > self.pp.get("reid_stale_s", 5.0):
+                    s.kf.x[2] += a * (prior[0] - s.kf.x[2])
+                    s.kf.x[3] += a * (prior[1] - s.kf.x[3])
             s.kf.predict(dt)
             self._sync(s)
         self._t = now
+
+    def _update_sea_state(self, now: float) -> None:
+        samples = []
+        for s in self._tracks.values():
+            tr = s.track
+            if tr.floating and tr.confirmed and now - tr.last_seen < 1.0 and tr.hits >= self.sea.min_obs:
+                samples.append((s.kf.x[2], s.kf.x[3], max(s.kf.P[2, 2], s.kf.P[3, 3])))
+        self.sea.update(now, samples, self.wind)
+
+    @property
+    def sea_current(self) -> tuple[float, float]:
+        return (self.sea.current[0], self.sea.current[1])
 
     def process(self, detections: list[Detection], pos, rpy, stamp: float, wind=None) -> None:
         """One camera frame worth of detections (jury + team, already merged)."""
@@ -148,7 +171,8 @@ class PerceptionAgent:
                     continue
                 if tr.floating != in_any_polygon(g, self.water):
                     continue  # water/land status must match
-                gate = min(pp["reid_max_m"], 3.0 * s.kf.sigma + pp["reid_base_m"])
+                gmax = pp["reid_max_floating_m"] if tr.floating else pp["reid_max_m"]
+                gate = min(gmax, 3.0 * s.kf.sigma + pp["reid_base_m"])
                 dd = dist2(g, s.kf.pos)
                 if dd <= gate:
                     pairs.append((dd, mi, tid))
@@ -159,7 +183,21 @@ class PerceptionAgent:
             used_m.add(mi)
             used_t.add(tid)
             self.stats["reid"] = self.stats.get("reid", 0) + 1
-            self._update(self._tracks[tid], *meas[mi], stamp)
+            st = self._tracks[tid]
+            g = meas[mi][1]
+            long_v = None
+            if st.track.floating and st.obs:
+                # long-baseline drift measurement: displacement since last seen / time unseen
+                t_last, x_last, y_last = st.obs[-1]
+                gap = stamp - t_last
+                if gap >= self.pp["reid_stale_s"]:
+                    long_v = ((g[0] - x_last) / gap, (g[1] - y_last) / gap)
+                    var = (2.0 * self.dp["meas_sigma_floor"]) ** 2 / gap**2 + 0.02**2
+                    self.sea.update(stamp, [(long_v[0], long_v[1], var)], self.wind)
+            self._update(st, *meas[mi], stamp)
+            if long_v is not None:
+                st.kf.x[2], st.kf.x[3] = long_v  # best estimate of this object's drift
+                st.kf.prior = long_v
 
         # --- births
         for mi, (d, g, sig) in enumerate(meas):
@@ -167,11 +205,12 @@ class PerceptionAgent:
                 self._birth(d, g, sig, stamp)
 
         self._refresh_categories(stamp)
+        self._update_sea_state(stamp)
 
     # ------------------------------------------------------------ internals
     def _birth(self, d: Detection, g, sig: float, stamp: float) -> None:
         floating = in_any_polygon(g, self.water)
-        prior = drift_prior(self.dp["current"], self.wind, self.dp["k_leeway"]) if floating else (0.0, 0.0)
+        prior = self.sea.prior(self.wind) if floating else (0.0, 0.0)
         kf = DriftKF(g, sig, floating, prior, self.dp["q_pos"], self.dp["q_vel"], self.dp["max_sigma"], self.dp["vel_sigma0"],
                      self.dp["max_speed_dev"], self.dp["vel_sigma_floor"], self.dp["meas_sigma_floor"])
         prefix = {Cls.INJURED: "C", Cls.MINE: "M", Cls.WEAPON: "W", Cls.HOSTILE: "H", Cls.DEBRIS: "D"}[d.cls]

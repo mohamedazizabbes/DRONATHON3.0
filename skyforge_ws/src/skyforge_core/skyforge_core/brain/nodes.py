@@ -258,8 +258,16 @@ class Brain:
         u["events"] = ev
         return u
 
+    def _policy(self, s: DroneState) -> str:
+        """Effective triage policy. A MAYDAY handover drone serves the casualties it
+        inherited immediately (they already waited), whatever the configured policy."""
+        return "immediate" if s.get("handover") else self.mp["triage_policy"]
+
+    def _urgent_only(self, s: DroneState) -> bool:
+        return self._exploring_left(s) and self._policy(s) == "hybrid"
+
     def _preempt_needed(self, s: DroneState) -> bool:
-        policy = self.mp["triage_policy"]
+        policy = self._policy(s)
         pend = self.pending(s)
         if not pend:
             return False
@@ -281,9 +289,8 @@ class Brain:
         sig = self._triage_sig(s)
         if self._preempt_needed(s) and (sig != s.get("triage_sig") or s["t"] - s.get("triage_t", -1e9) > 10.0):
             # quiet feasibility check first: only leave exploration for a casualty we can serve
-            only = self.mp["triage_policy"] == "hybrid"
-            if self.triage(s, only_urgent=only).best is not None:
-                u.update(self._transition(s, Phase.TRIAGE, "casualty pending (policy %s)" % self.mp["triage_policy"], ev))
+            if self.triage(s, only_urgent=self._urgent_only(s)).best is not None:
+                u.update(self._transition(s, Phase.TRIAGE, "casualty pending (policy %s)" % self._policy(s), ev))
                 u["events"] = ev
                 return u
             u["triage_sig"], u["triage_t"] = sig, s["t"]
@@ -344,7 +351,8 @@ class Brain:
         dups = [(a, b) for a, b in dups if b]
         if dups:
             for a, b in dups:
-                ev.append(self._ev(s, "dec", f"{a} is a re-detection of served {b}: no second kit", decision="duplicate"))
+                why = "seen with a delivered kit (IR strobe)" if b == "kit-marked" else f"re-detection of served {b}"
+                ev.append(self._ev(s, "dec", f"{a}: {why}, no second kit", decision="duplicate"))
             u["served_ids"] = list(s.get("served_ids", [])) + [a for a, _ in dups]
             s["served_ids"] = u["served_ids"]
         if s.get("kits", 0) <= 0:
@@ -352,7 +360,7 @@ class Brain:
             u["rth_reason"] = "payload_empty"
             u["events"] = ev
             return u
-        res = self.triage(s, only_urgent=self._exploring_left(s) and self.mp["triage_policy"] == "hybrid")
+        res = self.triage(s, only_urgent=self._urgent_only(s))
         self.last_triage = res
         best = res.best
         pid = s.get("priority_id")
@@ -372,7 +380,7 @@ class Brain:
         if best is not None:
             u["target"] = {"id": best.id, "score": best.score, "point": best.target, "retries": 0,
                            "search": None, "search_t": None, "low_t": None,
-                           "urgent_only": self._exploring_left(s) and self.mp["triage_policy"] == "hybrid"}
+                           "urgent_only": self._urgent_only(s)}
             u.update(self._transition(s, Phase.NAVIGATE, f"best feasible target {best.id}", ev))
         else:
             u["target"] = None
@@ -406,7 +414,7 @@ class Brain:
             return u
 
         # Pre-emption with hysteresis: a much better casualty appeared.
-        res = self.triage(s, only_urgent=self._exploring_left(s) and self.mp["triage_policy"] == "hybrid"
+        res = self.triage(s, only_urgent=self._urgent_only(s)
                           and tgt.get("urgent_only", False))
         if res.best and res.best.id != tgt["id"] and res.best.score > tgt["score"] * self.mp["switch_hysteresis"]:
             ev.append(self._ev(s, "dec", f"switch target {tgt['id']} -> {res.best.id} (S {tgt['score']:.2f} -> {res.best.score:.2f})",

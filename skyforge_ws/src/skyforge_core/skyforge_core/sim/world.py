@@ -29,7 +29,10 @@ DEFAULT_SCENARIO = {
     },
     "wind": [2.0, 1.0],
     "visibility": 1.0,
-    "current": [0.15, 0.05],
+    "current": [0.20, 0.02],  # truth; the drone's forecast (drift.current) is 0.15/0.05: slightly wrong
+    # tide change: the current rotates and strengthens mid-mission (estimated online by the drone)
+    "current_schedule": [{"t": 200, "current": [0.32, -0.06]}],  # alongshore current strengthens and turns
+    "waves": {"amp": 0.6, "period": 7.0, "dir": [0.0, 1.0]},
     "k_leeway": 0.03,
     "objects": [
         # casualties (truth START category in "cat")
@@ -93,7 +96,9 @@ class World:
         self.base_wind = list(self.sc.get("wind", [0, 0]))
         self.wind = list(self.base_wind)
         self.visibility = float(self.sc.get("visibility", 1.0))
-        self.current = self.sc.get("current", params["drift"]["current"])
+        self.current = list(self.sc.get("current", params["drift"]["current"]))
+        self.current_schedule = sorted(self.sc.get("current_schedule", []), key=lambda c: c["t"])
+        self.wave = self.sc.get("waves", {"amp": 0.0, "period": 7.0, "dir": [0.0, 1.0]})
         self.k_leeway = self.sc.get("k_leeway", params["drift"]["k_leeway"])
         self.water = params["water"]["polygons"]
         self.objects: list[TruthObject] = []
@@ -113,11 +118,20 @@ class World:
         if self.gust_until >= 0 and self.t > self.gust_until:
             self.wind = list(self.base_wind)
             self.gust_until = -1.0
+        while self.current_schedule and self.current_schedule[0]["t"] <= self.t:
+            self.current = list(self.current_schedule.pop(0)["current"])  # tide / current change
         drift = (self.current[0] + self.k_leeway * self.wind[0], self.current[1] + self.k_leeway * self.wind[1])
+        # wave orbital motion: zero-mean oscillation on top of the drift (derivative of A*sin(wt+phi))
+        A, T = float(self.wave.get("amp", 0.0)), float(self.wave.get("period", 7.0))
+        wd = self.wave.get("dir", [0.0, 1.0])
         for o in self.objects:
             if o.floating:
-                o.p[0] += drift[0] * dt
-                o.p[1] += drift[1] * dt
+                phi = o.attrs.setdefault("_wave_phase", self.rng.uniform(0, 2 * math.pi))
+                osc = A * (2 * math.pi / T) * math.cos(2 * math.pi * self.t / T + phi) if A > 0 else 0.0
+                o.p[0] += (drift[0] + osc * wd[0]) * dt
+                o.p[1] += (drift[1] + osc * wd[1]) * dt
+                if not in_any_polygon(o.p, self.water):
+                    o.floating = False  # washed ashore: stops drifting
         for m in self.movers:
             loop = m["loop"]
             tgt = loop[(m["seg"] + 1) % len(loop)]
@@ -168,6 +182,8 @@ class World:
                 bbox = [u - s_px / 2, v - s_px / 2, u + s_px / 2, v + s_px / 2]  # centre = person
                 attrs = {"temp_k": round(o.attrs.get("temp_k", 309.0) + self.rng.gauss(0, 0.4), 1),
                          "posture": o.attrs.get("posture"), "moving": bool(o.attrs.get("moving", False))}
+                if o.attrs.get("marked"):  # delivered kit floating next to them, IR strobe visible in FLIR
+                    attrs["marked"] = True
                 if alt < 12.0:  # breathing micro-motion is only resolvable at close range
                     attrs["breathing"] = bool(o.attrs.get("breathing", True))
                 team.append({"class": "injured", "confidence": round(conf, 3), "bbox": bbox, "attrs": attrs})

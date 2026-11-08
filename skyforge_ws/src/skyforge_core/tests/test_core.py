@@ -413,3 +413,65 @@ def test_deceased_never_gets_a_kit(P):
          "wind": (0, 0), "gnss_ok": True, "zones": [], "manual_zones": []}
     res = ag.triage(s)
     assert res.best.id == "C10" and all(c.id != "C9" for c in res.ranked)
+
+
+def test_sea_state_tracks_a_current_change():
+    from skyforge_core.perception.sea_state import SeaStateEstimator
+
+    sea = SeaStateEstimator((0.15, 0.05), k_leeway=0.03, tau_s=30.0)
+    wind = (2.0, 0.0)
+    t = 0.0
+    for _ in range(1200):  # 120 s observing floating objects that drift with a NEW current (0.32, -0.06)
+        t += 0.1
+        v = (0.32 + 0.03 * wind[0], -0.06)
+        sea.update(t, [(v[0], v[1], 0.01), (v[0] + 0.05, v[1] - 0.05, 0.04)], wind)
+    assert abs(sea.current[0] - 0.32) < 0.03 and abs(sea.current[1] + 0.06) < 0.03
+
+
+def test_long_gap_reid_learns_the_drift(P):
+    """A floating casualty seen, lost for 120 s, then re-seen far away keeps its id
+    and its displacement/time teaches the sea-state estimator the real current."""
+    ag = PerceptionAgent(P)
+    cam = ag.cam
+    rpy = (0.0, 0.0, 0.0)
+    true_v = (0.35, -0.05)  # real drift, quite different from the forecast prior
+    p0 = (60.0, -50.0)
+
+    def frame(t, drone_xy, obj):
+        pos = (drone_xy[0], drone_xy[1], 25.0)
+        px = world_to_pixel(obj, pos, rpy, cam)
+        d = Detection(Cls.INJURED, 0.8, (px[0] - 6, px[1] - 6, px[0] + 6, px[1] + 6), t, "team",
+                      {"temp_k": 308.0, "posture": "lying", "moving": False})
+        ag.process([d], pos, rpy, t)
+
+    for k in range(6):  # seen for ~1 s
+        frame(0.2 * k, p0, p0)
+    tid = ag.confirmed()[0].id
+    t = 120.0
+    obj = (p0[0] + true_v[0] * t, p0[1] + true_v[1] * t)
+    for k in range(3):
+        frame(t + 0.2 * k, obj, (obj[0] + true_v[0] * 0.2 * k, obj[1] + true_v[1] * 0.2 * k))
+    floats = [x for x in ag.confirmed() if x.cls == Cls.INJURED]
+    assert [x.id for x in floats] == [tid]  # same person, no new identity
+    assert math.hypot(ag.sea.current[0] - (true_v[0] - 0.0), ag.sea.current[1] - true_v[1]) < \
+        math.hypot(P["drift"]["current"][0] - true_v[0], P["drift"]["current"][1] - true_v[1])  # moved toward the truth
+
+
+def test_mayday_handover_resumes_in_triage(P, tmp_path):
+    from skyforge_core.brain.handover import load_snapshot, maybe_resume
+    from skyforge_core.brain.state import snapshot
+
+    o1 = Orchestrator(P, engine="fsm")
+    served, todo = _cas("C1", (40.0, 10.0), Start.IMMEDIATE), _cas("C2", (80.0, -20.0), Start.DELAYED)
+    o1.state.update(casualties=[served, todo], served_ids=["C1"], explore_idx=3)
+    path = tmp_path / "mayday_snapshot.json"
+    path.write_text(json.dumps({"t": "may", "s": snapshot(o1.state)}), encoding="utf-8")
+    assert load_snapshot(str(path))["explore_idx"] == 3
+
+    o2, ag2 = Orchestrator(P, engine="fsm"), PerceptionAgent(P)
+    res = maybe_resume(str(path), o2, ag2, 0.0)
+    assert res["casualties_to_serve"] == 1 and o2.state["served_ids"] == ["C1"]
+    tracks = {t.id: t for t in ag2.confirmed()}
+    assert tracks["C1"].attrs.get("marked") and not tracks["C2"].attrs.get("marked")
+    s = o2.tick({"t": 0.1, "armed": True, "pos": (0.0, 0.0, 25.0), "battery_wh": 60.0, "casualties": ag2.casualties()})
+    assert s["phase"] == Phase.NAVIGATE and s["target"]["id"] == "C2"  # INIT -> TRIAGE -> NAVIGATE, skips the served one

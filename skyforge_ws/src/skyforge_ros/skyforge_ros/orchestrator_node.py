@@ -22,6 +22,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import BatteryState
 from std_msgs.msg import Bool, String
 
+from skyforge_core.brain.handover import maybe_resume
 from skyforge_core.brain.orchestrator import Orchestrator
 from skyforge_core.brain.state import snapshot
 from skyforge_core.domain import PHASE_FR, Phase
@@ -39,6 +40,11 @@ class OrchestratorNode(Node):
         os.makedirs(log_dir, exist_ok=True)
         self.log = MissionLog(os.path.join(log_dir, f"mission_log_{time.strftime('%Y%m%d_%H%M%S')}.jsonl"))
         self.orch = Orchestrator(self.p, self.log)
+        # drone 2 after a MAYDAY: resume_snapshot:=<station's mayday_snapshot.json>
+        self.declare_parameter("resume_snapshot", "")
+        res = maybe_resume(self.get_parameter("resume_snapshot").value, self.orch, None, now_s(self), self.log)
+        if res:
+            self.get_logger().warn(f"HANDOVER: resuming mission from snapshot {res}")
         self.inputs = {"pos": (0.0, 0.0, 0.0), "vel": (0.0, 0.0, 0.0), "rpy": (0.0, 0.0, 0.0), "armed": False,
                        "battery_wh": self.p["energy"]["capacity_wh"], "battery_pct": 100.0, "link_up": True,
                        "gnss_ok": True, "nav_source": "gnss", "wind": tuple(self.p.get("wind_default", (0.0, 0.0))),

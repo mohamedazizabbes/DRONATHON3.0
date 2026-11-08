@@ -41,6 +41,21 @@ class PerceptionAgentNode(Node):
         self.p = node_params(self)
         self.cam = Camera.from_params(self.p)
         self.agent = PerceptionAgent(self.p, self.cam)
+        self.declare_parameter("resume_snapshot", "")
+        snap_path = self.get_parameter("resume_snapshot").value
+        if snap_path and snap_path not in ("none", "None"):
+            from skyforge_core.brain.handover import load_snapshot
+            from skyforge_core.domain import Cls, track_from_dict
+
+            snap = load_snapshot(snap_path)
+            tracks = []
+            for c in snap.get("cas", []):
+                tr = track_from_dict({**c, "cls": Cls.INJURED, "confirmed": True})
+                if c.get("s"):
+                    tr.attrs["marked"] = True
+                tracks.append(tr)
+            self.agent.seed_tracks(tracks, now_s(self))
+            self.get_logger().warn(f"HANDOVER: {len(tracks)} casualties seeded from {snap_path}")
         self.wind = (0.0, 0.0)
         self.poses: deque = deque(maxlen=400)  # (t, pos, rpy)
         self.pending: dict[str, tuple[float, list[Detection]]] = {}

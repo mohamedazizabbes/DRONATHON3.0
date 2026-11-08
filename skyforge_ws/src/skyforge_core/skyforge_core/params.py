@@ -57,6 +57,7 @@ DEFAULTS: dict[str, Any] = {
         "reid_stale_s": 5.0,
         "reid_base_m": 6.0,
         "reid_max_m": 25.0,
+        "reid_max_floating_m": 90.0,  # drifting objects: gate grows with uncertainty up to this
         "confirm_hits": 3,
         "confirm_window": 5,
         "delete_after_misses": 4,  # unconfirmed tracks only
@@ -84,11 +85,12 @@ DEFAULTS: dict[str, Any] = {
         "k_leeway": 0.03,  # fraction of wind speed, downwind
         "q_pos": 0.02,
         "q_vel": 0.0001,
-        "max_speed_dev": 0.15,
-        "vel_sigma_floor": 0.03,  # honest drift-velocity uncertainty: sigma grows with time unseen
+        "max_speed_dev": 0.3,
+        "vel_sigma_floor": 0.08,  # honest drift-velocity uncertainty: sigma grows with time unseen
         "meas_sigma_floor": 0.8,  # floating targets: per-detection position noise floor, m  # |v - drift prior| clamp for floating tracks, m/s
         "r_meas": 1.0,
         "max_sigma": 30.0,
+        "sea_tau_s": 30.0,  # time constant of the online current estimate
         "vel_sigma0": 0.1,  # prior drift velocity uncertainty, m/s
     },
     "zones": {

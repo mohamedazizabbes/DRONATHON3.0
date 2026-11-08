@@ -19,6 +19,7 @@ import time
 from collections import deque
 from typing import Optional
 
+from ..brain.handover import apply_snapshot
 from ..brain.orchestrator import Orchestrator
 from ..brain.state import snapshot as make_snapshot
 from ..comm.drone_comm import DroneComm
@@ -353,6 +354,8 @@ class MissionSim:
         rec = {"t": t, "track": a["id"], "truth": nearest.id, "cat": nearest.attrs.get("cat"), "err_m": round(err, 2),
                "on_target": err <= self.p["mission"]["delivery_radius"] and nearest.id not in served_truth, "drone": d.name}
         self.deliveries.append(rec)
+        if err <= 1.5:
+            nearest.attrs["marked"] = True  # the kit stays with the casualty (drifts with them)
         self.say(f"[{t:7.1f}s] {d.name} DROP        kit -> {nearest.id} (truth error {err:.2f} m)")
 
     def _truth_checks(self, d: DroneUnit, t: float) -> None:
@@ -394,17 +397,7 @@ class MissionSim:
         via = "station (reassembled from fragments)" if self.pending_handover else "local copy (station never received it)"
         self.say(f"[{t:7.1f}s] station     MAYDAY handover -> drone2 takes off with snapshot via {via}")
         d2 = self._new_drone("drone2", t)
-        st = d2.orch.state
-        st["served_ids"] = sorted(set(snap.get("served", [])) | {c["id"] for c in snap.get("cas", []) if c.get("s")})
-        st["explore_idx"] = int(snap.get("explore_idx", 0))
-        st["handover"] = True
-        if snap.get("cov_rle"):
-            d2.orch.brain.coverage.load_rle(snap["cov_rle"])
-        st["manual_zones"] = [Zone(z["id"], z["cls"], tuple(z["center"]), float(z["radius"]), tuple(z.get("vel", (0, 0))), 0.0, "handover")
-                              for z in snap.get("zones", [])]
-        d2.agent.seed_tracks([track_from_dict({**c, "cls": Cls.INJURED, "confirmed": True}) for c in snap.get("cas", [])], t)
-        self.log.add(event(t, "handover", "INIT", f"drone2 resumes: {sum(1 for c in snap.get('cas', []) if not c.get('s'))} casualties to serve, "
-                                                    f"{len(snap.get('zones', []))} zones, coverage {snap.get('cov')}"))
+        apply_snapshot(d2.orch, d2.agent, snap, t, self.log)  # same code path as the ROS nodes
         self.drones.append(d2)
         self.active = d2
         self.pending_handover = None
@@ -421,6 +414,13 @@ class MissionSim:
                 same = [o for o in self.world.objects if o.cls == tr.cls]
                 if same:
                     loc_err.append(min(dist2(o.p, tr.pos) for o in same))
+        float_err = []
+        for d in self.drones:
+            for tr in d.agent.confirmed():
+                if tr.floating:
+                    same = [o for o in self.world.objects if o.cls == tr.cls and o.floating]
+                    if same:
+                        float_err.append(round(min(dist2(o.p, tr.pos) for o in same), 2))
         false_tracks = 0
         for d in self.drones:
             for tr in d.agent.confirmed():
@@ -461,6 +461,9 @@ class MissionSim:
                        "kendall_tau_vs_urgency": round(kendall_tau(served_order, oracle), 3),
                        "first_delivery_s": self.deliveries[0]["t"] if self.deliveries else None},
             "rth": rth,
+            "sea": {"true_current": [round(v, 3) for v in self.world.current],
+                    "estimated_current": [round(v, 3) for v in self.drones[-1].agent.sea_current],
+                    "floating_track_err_m": float_err},
             "comms": {**comm, "station_resync_s": [round(x, 2) for x in self.station.resync_times],
                       "station_rx": self.station.stats, "goal_reaction_ms": self.goal_reactions},
             "security": {"forged_rejected": comm["forged_rejected"], "replay_rejected": comm["replay_rejected"],
