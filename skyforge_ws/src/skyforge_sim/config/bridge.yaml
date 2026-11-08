@@ -37,3 +37,7 @@
   ros_type_name: sensor_msgs/msg/Image
   gz_type_name: gz.msgs.Image
   direction: ROS_TO_GZ
+- service_name: /world/skyforge/create
+  ros_type_name: ros_gz_interfaces/srv/SpawnEntity
+  gz_req_type_name: gz.msgs.EntityFactory
+  gz_rep_type_name: gz.msgs.Boolean

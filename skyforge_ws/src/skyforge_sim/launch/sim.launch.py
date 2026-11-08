@@ -55,6 +55,7 @@ def setup(context):
                  parameters=[{"use_sim_time": True, "scenario_file": scenario}])
     weather = Node(package="skyforge_sim", executable="weather_node", output="screen",
                    parameters=[{"use_sim_time": True, "scenario_file": scenario}])
+    payload = Node(package="skyforge_sim", executable="payload_node", output="screen", parameters=[{"use_sim_time": True}])
     shim = Node(package="skyforge_sim", executable="heading_shim", output="screen", parameters=[{"use_sim_time": True}])
     hud = Node(package="skyforge_sim", executable="hud_node", output="screen", condition=IfCondition(LaunchConfiguration("hud")))
     stack = IncludeLaunchDescription(
@@ -64,7 +65,7 @@ def setup(context):
                           "fault_script": LaunchConfiguration("fault_script")}.items(),
         condition=IfCondition(LaunchConfiguration("stack")),
     )
-    return [gz_server, gz_gui, follow, bridge] + ([] if external else [mover]) + [weather, shim, hud, stack] + extra
+    return [gz_server, gz_gui, follow, bridge] + ([] if external else [mover]) + [weather, shim, payload, hud, stack] + extra
 
 
 def generate_launch_description():

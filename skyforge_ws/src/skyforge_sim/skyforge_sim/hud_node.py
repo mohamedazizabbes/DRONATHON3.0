@@ -63,6 +63,9 @@ class Hud(Node):
         self.truth = []
         self.found = set()
         self.create_subscription(String, "/sim/truth", self.on_truth, 10)
+        self.create_subscription(String, "/hud/event", self.on_event, 10)
+        self.events = []
+        self.delivered = []
         self.pos = (0.0, 0.0)
         area = DEFAULTS["mission"]["area"]
         self.shore = max(p[1] for poly in DEFAULTS["water"]["polygons"] for p in poly)
@@ -80,6 +83,15 @@ class Hud(Node):
             self.dets[src] = (d.get("detections", []), tuple(d.get("image", [640, 480])), time.time())
         except ValueError:
             pass
+
+    def on_event(self, m):
+        try:
+            e = json.loads(m.data)
+        except ValueError:
+            return
+        self.events.append((time.time(), e))
+        if e.get("kind") == "kit":
+            self.delivered.append(e)
 
     def on_truth(self, m):
         try:
@@ -247,6 +259,11 @@ class Hud(Node):
         l = (int(d[0] + 7 * math.cos(a_ + 2.5)), int(d[1] - 7 * math.sin(a_ + 2.5)))
         r = (int(d[0] + 7 * math.cos(a_ - 2.5)), int(d[1] - 7 * math.sin(a_ - 2.5)))
         cv2.fillPoly(img, [np.array([tip, l, r], np.int32)], CYAN)
+        for e in self.delivered:
+            kp = P(*e["p"])
+            cv2.rectangle(img, (kp[0] - 4, kp[1] - 4), (kp[0] + 4, kp[1] + 4), (30, 30, 220), -1)
+            cv2.line(img, (kp[0] - 3, kp[1]), (kp[0] + 3, kp[1]), WHITE, 1)
+            cv2.line(img, (kp[0], kp[1] - 3), (kp[0], kp[1] + 3), WHITE, 1)
         hp = P(*DEFAULTS["mission"]["home"])
         cv2.drawMarker(img, hp, GREEN, cv2.MARKER_SQUARE, 10, 2)
         self.text(img, "H", (hp[0] - 4, hp[1] + 20), GREEN, 0.45)
@@ -294,6 +311,15 @@ class Hud(Node):
             cv2.line(view, (x, y - 40), (x, y - 32), YELLOW, 2)
             cv2.line(view, (x, y + 32), (x, y + 40), YELLOW, 2)
         self.text(view, "CAM  RGB  640x480  tilt 20", (10, vh - 12), GREY, 0.45)
+        recent = [e for ts, e in self.events if time.time() - ts < 6.0]
+        if recent:
+            e = recent[-1]
+            msg = f"MEDICAL KIT DROPPED  ->  {e.get('id', '?')}" if e.get("kind") == "kit" else str(e)
+            (tw, th), _ = cv2.getTextSize(msg, cv2.FONT_HERSHEY_DUPLEX, 0.8, 2)
+            bx = (vw - tw) // 2
+            cv2.rectangle(view, (bx - 14, 40), (bx + tw + 14, 40 + th + 20), (20, 20, 160), -1)
+            cv2.rectangle(view, (bx - 14, 40), (bx + tw + 14, 40 + th + 20), WHITE, 2)
+            cv2.putText(view, msg, (bx, 40 + th + 8), cv2.FONT_HERSHEY_DUPLEX, 0.8, WHITE, 2, cv2.LINE_AA)
         canvas[56:56 + vh, 10:10 + vw] = view
         cv2.rectangle(canvas, (10, 56), (10 + vw - 1, 56 + vh - 1), (70, 70, 70), 1)
         mw, mh = W - vw - 30, H - 56 - 46

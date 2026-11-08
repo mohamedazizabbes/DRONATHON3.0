@@ -18,8 +18,7 @@ HEAD = """<?xml version="1.0"?>
   <scene><ambient>0.5 0.5 0.52 1</ambient><background>0.62 0.76 0.9 1</background><shadows>true</shadows><sky></sky></scene>
   <light type="directional" name="sun"><cast_shadows>true</cast_shadows><pose>0 0 100 0 0 0</pose>
     <diffuse>0.95 0.93 0.88 1</diffuse><specular>0.3 0.3 0.3 1</specular><direction>0.3 0.2 -1</direction></light>
-{terrain}
-"""
+{terrain}\n"""
 
 HOSTILE_VESSELS = [
     {"id": "H-vessel-1", "p": [35.0, -48.0], "yaw": 0.4},
