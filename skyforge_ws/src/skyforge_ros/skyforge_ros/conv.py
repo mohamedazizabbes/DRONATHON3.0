@@ -12,6 +12,9 @@ from skyforge_interfaces.msg import Track as TrackMsg
 from skyforge_interfaces.msg import TrackArray, ZoneArray
 from skyforge_interfaces.msg import Zone as ZoneMsg
 
+# Track attributes that decisions depend on (must cross the ROS boundary)
+TRACK_ATTRS = ("likely_deceased", "marked", "layers", "depth", "submerged", "category_why", "detection_radius", "single_pass")
+
 # PX4 /fmu/out/* topics are BEST_EFFORT
 QOS_PX4 = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                      history=HistoryPolicy.KEEP_LAST, depth=1)
@@ -42,6 +45,7 @@ def track_to_msg(t: Track) -> TrackMsg:
     m.category = t.category.value if isinstance(t.category, Start) else str(t.category)
     m.urgency = float(t.urgency)
     m.first_seen, m.last_seen = float(t.first_seen), float(t.last_seen)
+    m.attrs_json = json.dumps({k: t.attrs[k] for k in TRACK_ATTRS if k in t.attrs}, separators=(",", ":"), default=str)
     return m
 
 
@@ -50,8 +54,14 @@ def msg_to_track(m: TrackMsg) -> Track:
         cat = Start(m.category)
     except ValueError:
         cat = Start.UNKNOWN
-    return Track(m.id, m.cls, (m.x, m.y), m.sigma, (m.vx, m.vy), m.conf, 3, m.confirmed, m.first_seen, m.last_seen,
-                 m.floating, cat, m.urgency)
+    tr = Track(m.id, m.cls, (m.x, m.y), m.sigma, (m.vx, m.vy), m.conf, 3, m.confirmed, m.first_seen, m.last_seen,
+               m.floating, cat, m.urgency)
+    if getattr(m, "attrs_json", ""):
+        try:
+            tr.attrs.update(json.loads(m.attrs_json))
+        except ValueError:
+            pass
+    return tr
 
 
 def zone_to_msg(z: Zone) -> ZoneMsg:

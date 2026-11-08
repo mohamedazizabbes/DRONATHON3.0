@@ -168,6 +168,10 @@ DEFAULTS: dict[str, Any] = {
         "jam_loss": 1.0,
         "udp": {"drone_port": 14600, "station_port": 14601, "station_host": "127.0.0.1", "drone_host": "127.0.0.1"},
         "http_port": 8080,
+        # The jury provides the ground station (spec section 3). If it cannot sign with our
+        # HMAC key, set "none": unsigned station messages are accepted (forgery protection OFF,
+        # logged loudly) and their keys / command names are normalised.
+        "station_auth": "hmac",
     },
     "health": {
         "motor_sat_level": 0.95,
@@ -219,6 +223,9 @@ DEFAULTS: dict[str, Any] = {
         "confirm_conf": 0.5,
         "range_sigma_m": 1.0,
     },
+    # Weather defaults (the jury provides the weather): overridden by PX4's wind estimate
+    # (/skyforge/wind) or by a station {"type": "weather"} goal_update.
+    "weather": {"wind": [0.0, 0.0], "visibility": 1.0},
     "orchestrator": {"engine": "langgraph", "rate_hz": 10.0},
     "logging": {"dir": "runs"},
 }

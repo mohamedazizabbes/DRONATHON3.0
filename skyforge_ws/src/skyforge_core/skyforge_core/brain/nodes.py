@@ -206,7 +206,7 @@ class Brain:
         for g in s["goal_updates"]:
             typ = g.get("type")
             recv = g.get("_recv_t", s["t"])
-            if locked and typ not in ("zone_add", "zone_clear", "rtb"):
+            if locked and typ not in ("zone_add", "zone_clear", "rtb", "weather"):
                 ev.append(self._ev(s, "goal", f"goal_update {typ} refused: safety lock ({s['phase'].value}, {s.get('rth_reason')})",
                                    goal=typ, refused=True, seq=g.get("_seq")))
                 continue
@@ -231,6 +231,8 @@ class Brain:
                 manual = [m for m in manual if m.id != z.id] + [z]
             elif typ == "zone_clear":
                 manual = [m for m in manual if m.id != g.get("id")]
+            elif typ == "weather":  # jury weather; the ROS node also republishes it on /skyforge/wind
+                ev.append(self._ev(s, "goal", f"weather update: wind {g.get('wind')} visibility {g.get('visibility')}"))
             elif typ == "priority":
                 u["priority_id"] = g.get("id")
                 s["priority_id"] = g.get("id")

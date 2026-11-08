@@ -65,6 +65,16 @@ class Codec:
             raise MessageTooLarge(f"{t} message is {len(out)} bytes (limit {self.max_bytes})")
         return out
 
+    def decode_unverified(self, data) -> dict:
+        try:
+            msg = json.loads(data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else data)
+        except (ValueError, UnicodeDecodeError) as e:
+            raise ForgedMessage(f"malformed: {e}") from e
+        if not isinstance(msg, dict):
+            raise ForgedMessage("not an object")
+        msg.pop("h", None)
+        return msg
+
     def decode(self, data: bytes) -> dict:
         try:
             msg = json.loads(data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else data)
@@ -106,6 +116,31 @@ class Codec:
             parts.append(piece)
             i += n
         return [{"ft": t, "fid": fid, "fi": k, "fn": len(parts), "d": p} for k, p in enumerate(parts)]
+
+
+GOAL_TYPES = {"goal", "goal_update", "cmd", "command", "mission_update"}
+GOAL_ALIASES = {
+    "goto": "goto", "waypoint": "goto", "go_to": "goto", "aller": "goto", "point": "goto",
+    "rtb": "rtb", "rth": "rtb", "return": "rtb", "return_home": "rtb", "retour_base": "rtb", "home": "rtb",
+    "area": "area", "zone_exploration": "area", "explore_area": "area",
+    "zone_add": "zone_add", "no_fly": "zone_add", "nofly": "zone_add", "zone_interdite": "zone_add", "danger_zone": "zone_add",
+    "zone_clear": "zone_clear", "resume": "resume", "reprendre": "resume",
+    "priority": "priority", "priorite": "priority", "priorité": "priority",
+    "weather": "weather", "meteo": "weather", "météo": "weather",
+}
+_ENVELOPE_KEYS = {"v", "seq", "ts", "b", "t", "h", "type", "goal", "g"}
+
+
+def normalize_goal(msg: dict) -> dict:
+    """Map foreign goal_update layouts onto ours: {"type": ..., params...}."""
+    g = msg.get("g") or msg.get("goal") or {k: v for k, v in msg.items() if k not in _ENVELOPE_KEYS}
+    g = dict(g) if isinstance(g, dict) else {}
+    raw = str(g.get("type") or g.get("cmd") or g.get("action") or msg.get("type") or "").strip().lower()
+    g["type"] = GOAL_ALIASES.get(raw, raw)
+    for k in ("position", "pos", "target", "point", "xy"):
+        if "p" not in g and k in g:
+            g["p"] = g[k]
+    return g
 
 
 class Reassembler:

@@ -1,6 +1,7 @@
 """Unit tests for the SKYFORGE core. Run:  pytest skyforge_ws/src/skyforge_core/tests -q"""
 import json
 import math
+import os
 
 import pytest
 
@@ -531,3 +532,33 @@ def test_sonar_ping_geometry_and_confirmation(P):
     assert not weak.confirmed  # rock-like weak return never confirms alone
     z = [z for z in ag.zones() if z.id == f"Z{strong.id}"][0]
     assert z.radius >= P["zones"]["safety_submerged_mine"]
+
+
+def test_jury_station_compatibility_mode(P):
+    from skyforge_core.params import deep_merge
+
+    jury_cmd = json.dumps({"type": "goal_update", "goal": {"cmd": "waypoint", "position": [120, 40]}}).encode()
+    strict = DroneComm(P, lambda d: True, boot_id=3)
+    assert strict.on_receive(jury_cmd, 1.0) == [] and strict.stats["forged_rejected"] == 1  # default: HMAC required
+    compat = DroneComm(deep_merge(P, {"comm": {"station_auth": "none"}}), lambda d: True, boot_id=3)
+    g = compat.on_receive(jury_cmd, 1.0)
+    assert len(g) == 1 and g[0]["type"] == "goto" and g[0]["p"] == [120, 40]
+    assert any(e.get("event") == "unsigned_mode" for e in compat.pop_events())  # logged loudly
+    w = compat.on_receive(json.dumps({"t": "goal", "g": {"type": "météo", "wind": [3, 1], "visibility": 0.4}}).encode(), 2.0)
+    assert w[0]["type"] == "weather"
+
+
+def test_mission_map_export(P, tmp_path):
+    from skyforge_core.mission_map import export_mission_map, track_row
+    from skyforge_core.planning.coverage import CoverageGrid
+
+    cov = CoverageGrid(P["mission"]["area"])
+    cov.mark_seen((50, 0), 25.0, 80.0, 60.0)
+    m = _cas("C1", (40.0, 10.0), Start.IMMEDIATE)
+    mine = Track("M1", Cls.MINE, (60.0, -40.0), 2.0, confirmed=True, attrs={"layers": ["sonar"], "depth": 12.0})
+    out = export_mission_map(str(tmp_path), P["mission"]["area"], [track_row(m, ["C1"]), track_row(mine)],
+                             [{"id": "ZM1", "cls": "mine", "center": [60, -40], "radius": 15.0}], cov, [(0, 0), (50, 0)], ["C1"],
+                             P["water"]["polygons"], "map")
+    doc = json.loads(open(out["json"], encoding="utf-8").read())
+    assert doc["objects"][0]["served"] and doc["objects"][1]["layers"] == ["sonar"] and 0 < doc["coverage"] < 1
+    assert out["png"] and os.path.exists(out["png"])

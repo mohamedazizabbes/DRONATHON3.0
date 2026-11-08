@@ -159,6 +159,11 @@ def test_full_graph_closed_loop(cfg):
     assert gs.stats["rx"] > 50 and gs.detections, "station got no telemetry/detections over UDP"
     assert gs.resync_times, "no resync after the jam"
     assert orch.latency.pct(95) < 100.0
+    # decision-relevant attributes must cross the ROS boundary (Track.attrs_json)
+    from skyforge_ros.conv import msg_to_track, track_to_msg
+    from skyforge_core.domain import Track as CoreTrack
+    rt = msg_to_track(track_to_msg(CoreTrack("C1", "injured", (1.0, 2.0), 1.0, attrs={"likely_deceased": True, "marked": True})))
+    assert rt.attrs["likely_deceased"] and rt.attrs["marked"]
     sonar_mines = [t for t in nodes[2].agent.tracks() if t.cls == "mine" and "sonar" in t.attrs.get("layers", [])]
     assert sonar_mines, "no mine contact from the sonar layer through ROS"
     mk = Bus.last.get("/viz/markers")

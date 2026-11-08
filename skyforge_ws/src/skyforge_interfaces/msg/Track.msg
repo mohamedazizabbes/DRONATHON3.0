@@ -13,3 +13,5 @@ string category       # START: IMM | DEL | MIN | EXP | UNK
 float32 urgency
 float64 first_seen
 float64 last_seen
+string attrs_json     # decision-relevant attributes: likely_deceased, marked (kit delivered),
+                      # layers + depth (mines), category_why, detection_radius (hostiles)

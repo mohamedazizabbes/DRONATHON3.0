@@ -512,6 +512,16 @@ class MissionSim:
             "mayday": {"happened": d1.mayday_snapshot is not None, "drone2": len(self.drones) > 1},
             "mines": self._mine_report(),
         }
+        try:
+            from ..mission_map import export_mission_map, track_row
+
+            last = self.drones[-1]
+            served = last.orch.state.get("served_ids", [])
+            export_mission_map(self.out, self.p["mission"]["area"], [track_row(t, served) for d in self.drones for t in d.agent.confirmed()],
+                               [z.to_dict() for z in last.agent.zones()], last.orch.brain.coverage,
+                               [(p[1], p[2]) for d in self.drones for p in d.trajectory], served, self.p["water"]["polygons"], "mission_map")
+        except Exception as e:  # noqa: BLE001
+            self.say(f"map export skipped: {e}")
         with open(os.path.join(self.out, "metrics.json"), "w", encoding="utf-8") as f:
             json.dump(m, f, indent=1, default=str)
         try:
