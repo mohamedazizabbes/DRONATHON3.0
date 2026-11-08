@@ -59,7 +59,6 @@ material PineTree/shadow_caster_alpha
   {
     pass
     {
-      // See: viewtopic.php?f=3&t=44817
       fog_override true
 
       cull_hardware none
@@ -77,7 +76,6 @@ material PineTree/shadow_caster_alpha
 
       texture_unit tex
       {
-        // Pass the texture with alpha channel to the caster
         texture branch_diffuse.png
       }
     }
