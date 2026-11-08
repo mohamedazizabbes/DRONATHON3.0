@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+runs/
+*.egg-info/
+build/
+install/
+log/
+.pytest_cache/
+station_log.jsonl
+mayday_snapshot.json
