@@ -36,10 +36,18 @@ CLASS_ALIASES: dict[str, str] = {
     # casualties (team F5)
     "injured": Cls.INJURED, "blesse": Cls.INJURED, "blessé": Cls.INJURED, "casualty": Cls.INJURED,
     "victim": Cls.INJURED, "swimmer": Cls.INJURED, "floater": Cls.INJURED, "person_lying": Cls.INJURED,
+    "injured_lying": Cls.INJURED, "injured_sitting": Cls.INJURED, "injured_water": Cls.INJURED,
+    "person_standing": Cls.INJURED, "person_waving": Cls.INJURED,
     # hostile units (team F5)
     "hostile_unit": Cls.HOSTILE, "hostile": Cls.HOSTILE, "unite_hostile": Cls.HOSTILE,
     "unité_hostile": Cls.HOSTILE, "soldier": Cls.HOSTILE, "tank": Cls.HOSTILE,
     "warship": Cls.HOSTILE, "patrol_vessel": Cls.HOSTILE, "military_vehicle": Cls.HOSTILE,
+}
+
+RAW_POSTURE: dict[str, dict] = {
+    "injured_lying": {"posture": "lying"}, "person_lying": {"posture": "lying"},
+    "injured_sitting": {"posture": "sitting"}, "person_standing": {"posture": "standing"},
+    "person_waving": {"posture": "waving"}, "injured_water": {"posture": "lying", "in_water": True},
 }
 
 _CLASS_KEYS = ("class", "classe", "cls", "label", "name", "class_name")
@@ -112,7 +120,8 @@ def parse_detections(
         stamp, source, items = default_stamp, default_source, payload
     out: list[Detection] = []
     for it in items:
-        cls = map_class(_first(it, _CLASS_KEYS))
+        raw_cls = _first(it, _CLASS_KEYS)
+        cls = map_class(raw_cls)
         if cls is None:
             continue
         conf = _first(it, _CONF_KEYS)
@@ -122,7 +131,9 @@ def parse_detections(
         box = _bbox(_first(it, _BOX_KEYS) if any(k in it for k in _BOX_KEYS) else it, img_w, img_h)
         if box is None:
             continue
-        out.append(Detection(cls, conf, box, stamp, source, dict(it.get("attrs", {}))))
+        attrs = dict(RAW_POSTURE.get(str(raw_cls).strip().lower(), {}))
+        attrs.update(it.get("attrs", {}))
+        out.append(Detection(cls, conf, box, stamp, source, attrs))
     return out
 
 

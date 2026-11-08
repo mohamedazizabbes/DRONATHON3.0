@@ -30,6 +30,14 @@ from std_msgs.msg import Float32, String
 
 from .conv import QOS_SENSOR
 
+POSTURE_CLASSES = {
+    "injured_lying": ("injured", {"posture": "lying"}),
+    "injured_sitting": ("injured", {"posture": "sitting"}),
+    "person_standing": ("injured", {"posture": "standing"}),
+    "person_waving": ("injured", {"posture": "waving"}),
+    "injured_water": ("injured", {"posture": "lying", "in_water": True}),
+}
+
 
 def image_to_numpy(m: Image) -> np.ndarray:
     ch = {"rgb8": 3, "bgr8": 3, "rgba8": 4, "bgra8": 4, "mono8": 1, "32FC1": 1, "16UC1": 1}.get(m.encoding, 3)
@@ -90,8 +98,10 @@ class VisionNode(Node):
                 for b in res.boxes:
                     k = int(b.cls)
                     x1, y1, x2, y2 = (float(v) for v in b.xyxy[0])
-                    d = {"class": self.remap.get(str(k), names.get(k, str(k))), "confidence": round(float(b.conf), 3),
-                         "bbox": [round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1)], "attrs": {}}
+                    raw = self.remap.get(str(k), names.get(k, str(k)))
+                    cls, attrs = POSTURE_CLASSES.get(raw, (raw, {}))
+                    d = {"class": cls, "confidence": round(float(b.conf), 3),
+                         "bbox": [round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1)], "attrs": dict(attrs)}
                     if th is not None and th.ndim == 2:
                         sy, sx = th.shape[0] / m.height, th.shape[1] / m.width
                         roi = th[int(y1 * sy): max(int(y2 * sy), int(y1 * sy) + 1), int(x1 * sx): max(int(x2 * sx), int(x1 * sx) + 1)]
