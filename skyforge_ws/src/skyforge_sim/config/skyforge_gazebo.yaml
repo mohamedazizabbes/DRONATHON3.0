@@ -10,7 +10,7 @@ skyforge:
       ymax: 90.0
     cruise_alt: 25.0
     cruise_speed: 6.0
-    delivery_alt: 5.0
+    delivery_alt: 25.0
     delivery_radius: 1.5
     delivery_max_retries: 3
     release_offset_m: 1.0

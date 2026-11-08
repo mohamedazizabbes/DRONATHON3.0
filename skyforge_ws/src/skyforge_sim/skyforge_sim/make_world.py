@@ -25,7 +25,7 @@ HOSTILE_VESSELS = [
     {"id": "H-vessel-2", "p": [215.0, -30.0], "yaw": 2.6, "patrol": [[215.0, -30.0], [215.0, -58.0]], "speed": 1.2},
 ]
 
-SIM_OVERRIDES = {"health": {"odom_timeout_s": 2.0}}
+SIM_OVERRIDES = {"health": {"odom_timeout_s": 2.0}, "mission": {"delivery_alt": 25.0}}
 
 THERMAL = '<plugin filename="gz-sim-thermal-system" name="gz::sim::systems::Thermal"><temperature>{t}</temperature></plugin>'
 
