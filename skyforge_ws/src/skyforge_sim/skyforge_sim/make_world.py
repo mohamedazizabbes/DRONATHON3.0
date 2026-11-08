@@ -19,9 +19,7 @@ HEAD = """<?xml version="1.0"?>
   <light type="directional" name="sun"><cast_shadows>true</cast_shadows><pose>0 0 100 0 0 0</pose>
     <diffuse>0.95 0.93 0.88 1</diffuse><specular>0.3 0.3 0.3 1</specular><direction>0.3 0.2 -1</direction></light>
 {terrain}
-  <model name="home_pad"><static>true</static><pose>{hx} {hy} 0.015 0 0 0</pose><link name="l">
-    <visual name="v"><geometry><cylinder><radius>1.5</radius><length>0.01</length></cylinder></geometry>
-    <material><ambient>0.2 0.6 0.2 1</ambient><diffuse>0.2 0.6 0.2 1</diffuse></material></visual></link></model>\n"""
+"""
 
 HOSTILE_VESSELS = [
     {"id": "H-vessel-1", "p": [35.0, -48.0], "yaw": 0.4},
