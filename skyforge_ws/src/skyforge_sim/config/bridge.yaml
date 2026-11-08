@@ -3,12 +3,12 @@
   ros_type_name: rosgraph_msgs/msg/Clock
   gz_type_name: gz.msgs.Clock
   direction: GZ_TO_ROS
-- ros_topic_name: /cmd_vel
+- ros_topic_name: /cmd_vel_gz
   gz_topic_name: /model/skyforge/cmd_vel
   ros_type_name: geometry_msgs/msg/Twist
   gz_type_name: gz.msgs.Twist
   direction: ROS_TO_GZ
-- ros_topic_name: /odom
+- ros_topic_name: /odom_gz
   gz_topic_name: /model/skyforge/odometry
   ros_type_name: nav_msgs/msg/Odometry
   gz_type_name: gz.msgs.Odometry

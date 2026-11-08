@@ -29,6 +29,7 @@ def generate_launch_description():
     bridge = Node(package="ros_gz_bridge", executable="parameter_bridge", name="gz_bridge", output="screen",
                   parameters=[{"config_file": os.path.join(share, "config", "bridge.yaml"), "use_sim_time": True}])
     mover = Node(package="skyforge_sim", executable="mover_node", output="screen", parameters=[{"use_sim_time": True}])
+    shim = Node(package="skyforge_sim", executable="heading_shim", output="screen", parameters=[{"use_sim_time": True}])
     stack = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(bringup, "launch", "mission.launch.py")),
         launch_arguments={"backend": "twist", "use_sim_time": "true", "config": LaunchConfiguration("config"),
@@ -36,4 +37,4 @@ def generate_launch_description():
                           "fault_script": LaunchConfiguration("fault_script")}.items(),
         condition=IfCondition(LaunchConfiguration("stack")),
     )
-    return LaunchDescription(args + env + [gz_server, gz_gui, bridge, mover, stack])
+    return LaunchDescription(args + env + [gz_server, gz_gui, bridge, mover, shim, stack])
