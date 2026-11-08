@@ -136,7 +136,8 @@ class DroneUnit:
         self.distance += math.hypot(self.pos[0] - old[0], self.pos[1] - old[1])
         if self.armed and (self.pos[2] > 0.05 or self.orch.state["phase"] == Phase.INIT):
             v_air = math.hypot(self.vel[0] - w[0], self.vel[1] - w[1])
-            p = self.energy.power_w(v_air) * 1.04 + 25.0 * max(0.0, self.vel[2])
+            # the real airframe draws more than the paper power budget: the brain must calibrate online
+            p = self.energy.power_w(v_air) * float(self.world.sc.get("true_power_scale", 1.15)) + 25.0 * max(0.0, self.vel[2])
             self.battery_wh -= p * dt / 3600.0
 
     def motor_outputs(self):
@@ -324,7 +325,7 @@ class MissionSim:
         for ev in s.get("events", []):
             if ev["type"] == "goal" and "reaction_ms" in ev:
                 self.goal_reactions.append(ev["reaction_ms"] + s["decision_ms"])
-            if ev["type"] in ("phase", "dec", "det", "goal", "nav", "may", "link"):
+            if ev["type"] in ("phase", "dec", "det", "goal", "nav", "may", "link", "energy"):
                 self.say(f"[{t:7.1f}s] {d.name} {ev['phase']:<11} {ev['msg']}")
             m = event_to_msg(ev)
             if m:

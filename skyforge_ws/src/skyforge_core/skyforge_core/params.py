@@ -28,6 +28,7 @@ DEFAULTS: dict[str, Any] = {
         "triage_policy": "hybrid",
         "preempt_urgency": 0.95,
         "kits": 4,  # medical kits on board
+        "serve_deceased": False,  # never spend a kit on a casualty flagged likely deceased (reported to the station)
         "coverage_target": 0.97,
         "switch_hysteresis": 1.25,  # new target must beat current score by this factor
         "duplicate_radius_m": 6.0,  # + 2 sigma: candidate on a served casualty = same person
@@ -109,6 +110,7 @@ DEFAULTS: dict[str, Any] = {
         "low_vis_extra": 2.0,
         "replan_move_m": 3.0,
         "plan_extra_m": 2.0,  # planning hysteresis on top of the safety margin
+        "evasive_alt": 15.0,  # altitude for waypoints inside a hostile line-of-sight ring
         "search_step": 6.0,
         "search_legs": 8,
         "max_expansions": 60000,
@@ -125,6 +127,7 @@ DEFAULTS: dict[str, Any] = {
         "deliver_wh": 0.8,
         "gust_factor": 1.2,
         "critical_pct": 8.0,
+        "v_air_max": 16.0,  # airframe airspeed limit (strong headwind -> ground speed drops)
     },
     "reflex": {
         "rate_hz": 50.0,

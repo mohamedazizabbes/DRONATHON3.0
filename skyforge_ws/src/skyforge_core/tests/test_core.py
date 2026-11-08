@@ -349,3 +349,38 @@ def test_short_sim_smoke(tmp_path, P):
     assert m["triage"]["off_target"] == 0 and m["triage"]["served_on_target"] >= 3
     assert all(p == "LANDED" for p in m["final_phase"])
     assert m["comms"]["max_bytes"] < 1024
+
+
+# ------------------------------------------------- energy model v2 / agent
+def test_headwind_stronger_than_cruise_does_not_explode(P):
+    e = EnergyModel.from_params(P)
+    calm = e.e_rth((200, 0), (0, 0), 6.0, (0, 0))
+    gale = e.e_rth((200, 0), (0, 0), 6.0, (7.0, 0))  # 7 m/s * 1.2 gust > 6 m/s cruise, blowing away from home
+    assert calm < gale < 4 * calm  # airspeed rises to ~14 m/s, ground speed held: no 1 m/s collapse
+    storm = e.e_rth((200, 0), (0, 0), 6.0, (15.0, 0))  # beyond the airframe: ground speed drops, energy grows a lot
+    assert storm > gale
+
+
+def test_energy_calibration_converges(P):
+    e = EnergyModel.from_params(P)
+    true_scale, wh, t = 1.25, 80.0, 0.0
+    vel, wind = (6.0, 0.0, 0.0), (0.0, 0.0)
+    for _ in range(600):  # 60 s at 10 Hz, steady cruise
+        t += 0.1
+        wh -= true_scale * e.p_hover_w * (1 + e.k_speed * 36.0) * 0.1 / 3600.0
+        e.calibrate(t, wh, vel, wind, airborne=True)
+    assert abs(e.scale - true_scale) < 0.05
+
+
+def test_evasive_exit_from_hostile_line_of_sight(P):
+    from skyforge_core.planning.agent import PlannerAgent
+
+    ag = PlannerAgent(P)
+    hostile = Zone("ZH1", Cls.HOSTILE, (100.0, 0.0), 25.0, soft_radius=40.0)
+    s = {"pos": (90.0, 20.0, 25.0), "zones": [hostile], "manual_zones": [], "wind": (0, 0), "gnss_ok": True}
+    res = ag.plan_path(s, (0.0, 60.0))
+    assert res.ok and res.reason.startswith("evasive")
+    exit_pt = res.path[1]
+    assert math.hypot(exit_pt[0] - 100.0, exit_pt[1]) >= 40.0  # first leg leaves the ring
+    assert ag.waypoint_alt(s, (95.0, 30.0), 25.0) == P["planner"]["evasive_alt"]
+    assert ag.waypoint_alt(s, (0.0, 60.0), 25.0) == 25.0

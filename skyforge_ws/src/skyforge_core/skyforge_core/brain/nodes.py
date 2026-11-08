@@ -15,13 +15,10 @@ import hashlib
 import math
 from typing import Any, Optional
 
-from ..energy import EnergyModel
 from ..geometry import dist2, segment_clear
 from ..mission_log import event
-from ..planning.astar import GridPlanner
-from ..planning.coverage import CoverageGrid, lawnmower
-from ..planning.intercept import expanding_square, intercept_point, search_step_from_sigma
-from ..planning.triage import score_casualties
+from ..planning.agent import PlannerAgent
+from ..planning.intercept import expanding_square, search_step_from_sigma
 from ..domain import Cls, Phase, PHASE_FR, Track, Zone, zone_from_dict
 from .state import DroneState, snapshot
 
@@ -29,28 +26,24 @@ MAX_HOPS = 4
 
 
 class Brain:
-    """Holds the heavy, non-serialisable context (grids, models) for the nodes."""
+    """State machine + interrupt router. Planning decisions are delegated to the
+    PlannerAgent (prioritisation, intercept, paths, energy/RTH)."""
 
     def __init__(self, params: dict):
         self.p = params
         self.mp = params["mission"]
-        self.energy = EnergyModel.from_params(params)
         self.home = tuple(self.mp["home"])
-        self.static_obstacles = [
-            (tuple(o["p"]), float(o["r"]), float(o.get("h", 100.0))) for o in params.get("obstacles", [])
-        ]
-        self._build_area(self.mp["area"])
+        self.agent = PlannerAgent(params)
+        cam = params["camera"]
+        self.hfov = cam["hfov_deg"]
+        self.vfov = math.degrees(2 * math.atan(math.tan(math.radians(self.hfov) / 2) * cam["height"] / cam["width"]))
         self.last_triage = None
 
-    def _build_area(self, area: dict) -> None:
-        self.area = dict(area)
-        cam = self.p["camera"]
-        self.planner = GridPlanner(area, self.p["planner"]["grid_res"], margin=40.0, max_expansions=self.p["planner"]["max_expansions"])
-        self.coverage = CoverageGrid(area, 2.0)
-        self.lanes = lawnmower(area, self.mp["cruise_alt"], cam["hfov_deg"], cam["lane_overlap"], self.home)
-        w, h = cam["width"], cam["height"]
-        self.hfov = cam["hfov_deg"]
-        self.vfov = math.degrees(2 * math.atan(math.tan(math.radians(self.hfov) / 2) * h / w))
+    # views on the agent (kept for readability of the handlers)
+    energy = property(lambda self: self.agent.energy)
+    coverage = property(lambda self: self.agent.coverage)
+    lanes = property(lambda self: self.agent.lanes)
+    area = property(lambda self: self.agent.area)
 
     # ================================================================ helpers
     def _ev(self, s: DroneState, etype: str, msg: str, **kw) -> dict:
@@ -70,78 +63,32 @@ class Brain:
         s["phase"] = new  # visible to the rest of this node
         return {"phase": new, "prev_phase": old, "phase_since": s["t"], "replan": True}
 
-    def margin(self, s: DroneState) -> float:
-        pp, zp = self.p["planner"], self.p["zones"]
-        wind = math.hypot(*s.get("wind", (0.0, 0.0)))
-        m = pp["drone_radius"] + pp["safety_margin"] + pp["wind_margin_k"] * wind
-        if s.get("visibility", 1.0) < 0.5:
-            m += pp["low_vis_extra"]
-        if not s.get("gnss_ok", True):
-            m += zp["gnss_lost_extra"]
-        return m
+    def margin(self, s):
+        return self.agent.margin(s)
 
-    def all_zones(self, s: DroneState) -> list[Zone]:
-        return list(s.get("zones", [])) + list(s.get("manual_zones", []))
+    def all_zones(self, s):
+        return self.agent.all_zones(s)
 
-    def hard_circles(self, s: DroneState, extra: float = 0.0) -> list:
-        """Inflated hard circles. The planner adds `plan_extra_m` (hysteresis) so a
-        zone that drifts or grows slightly does not invalidate the path at once."""
-        m = self.margin(s) + extra
-        circles = [(z.center, z.radius + m) for z in self.all_zones(s)]
-        alt = self.mp["cruise_alt"]
-        circles += [(c, r + m) for c, r, h in self.static_obstacles if h >= alt - 5.0]
-        return circles
+    def hard_circles(self, s, extra: float = 0.0):
+        return self.agent.hard_circles(s, extra)
 
-    def soft_circles(self, s: DroneState) -> list:
-        k = self.p["zones"]["los_cost"]
-        return [(z.center, z.soft_radius, k) for z in self.all_zones(s) if z.soft_radius > z.radius]
+    def soft_circles(self, s):
+        return self.agent.soft_circles(s)
 
-    def in_zone(self, s: DroneState, p) -> bool:
-        return any(dist2(p, c) < r for c, r in self.hard_circles(s))
+    def in_zone(self, s, p) -> bool:
+        return self.agent.in_zone(s, p)
 
-    def pending(self, s: DroneState) -> list[Track]:
-        done = set(s.get("served_ids", [])) | set(s.get("failed_ids", []))
-        return [t for t in s.get("casualties", []) if t.id not in done]
+    def pending(self, s):
+        return self.agent.pending(s)
 
-    def vg(self, s: DroneState, toward) -> float:
-        pos = s["pos"]
-        d = dist2(pos, toward)
-        if d < 1e-3:
-            return self.mp["cruise_speed"]
-        u = ((toward[0] - pos[0]) / d, (toward[1] - pos[1]) / d)
-        return self.energy.ground_speed(u, self.mp["cruise_speed"], s.get("wind", (0, 0)))
+    def intercept(self, s, t):
+        return self.agent.intercept(s, t)
 
-    def intercept(self, s: DroneState, t: Track):
-        if not t.floating:
-            return t.pos
-        return intercept_point(s["pos"], t.pos, t.vel, self.vg(s, t.pos))
+    def duplicate_of(self, s, t):
+        return self.agent.duplicate_of(s, t)
 
-    def duplicate_of(self, s: DroneState, t: Track) -> Optional[str]:
-        """Served casualty this track probably is (re-detection after drift)."""
-        served = set(s.get("served_ids", []))
-        for o in s.get("casualties", []):
-            # a land casualty can never be a drifted floater (and vice versa)
-            if o.id in served and o.id != t.id and o.floating == t.floating:
-                if o.floating:
-                    r = min(self.mp["duplicate_radius_m"] + 3.0 * max(o.sigma, t.sigma), self.mp["duplicate_max_floating_m"])
-                else:
-                    r = min(self.mp["duplicate_radius_m"] + 2.0 * max(o.sigma, t.sigma), self.mp["duplicate_max_m"])
-                if dist2(o.pos, t.pos) <= r:
-                    return o.id
-        return None
-
-    def triage(self, s: DroneState, only_urgent: bool = False):
-        a = self.area
-        cands = [t for t in self.pending(s) if self.duplicate_of(s, t) is None]
-        if only_urgent:
-            cands = [t for t in cands if t.urgency >= self.mp["preempt_urgency"]]
-        d_max = math.hypot(a["xmax"] - a["xmin"], a["ymax"] - a["ymin"])
-        return score_casualties(
-            cands, s["pos"], self.home, self.energy, s["battery_wh"], s.get("wind", (0, 0)),
-            self.mp["cruise_speed"], d_max, s.get("gnss_ok", True),
-            intercept_fn=lambda t: self.intercept(s, t),
-            blocked_fn=lambda p: self.in_zone(s, p),
-        )
+    def triage(self, s, only_urgent: bool = False):
+        return self.agent.triage(s, only_urgent)
 
     def _triage_sig(self, s: DroneState) -> str:
         items = sorted((t.id, t.category.value if hasattr(t.category, "value") else str(t.category)) for t in self.pending(s))
@@ -162,9 +109,14 @@ class Brain:
         sig = self._zones_sig(s)
         if sig != s.get("zones_sig"):
             self.coverage.set_blocked([(c, r) for c, r in self.hard_circles(s)])
-        thr = self.energy.rth_threshold(pos, self.home, self.mp["cruise_speed"], s.get("wind", (0, 0)), s.get("gnss_ok", True))
-        e_rth = self.energy.e_rth(pos, self.home, self.mp["cruise_speed"], s.get("wind", (0, 0)))
+        ev = []
+        scale = self.agent.calibrate_energy(s)
+        if scale is not None and abs(scale - s.get("energy_scale", 1.0)) > 0.03:
+            ev.append(self._ev(s, "energy", f"power model recalibrated from battery drain: x{scale:.2f}", scale=round(scale, 3)))
+        thr, e_rth = self.agent.rth(s)
         return {
+            "events": ev,
+            "energy_scale": self.energy.scale,
             "coverage": self.coverage.fraction(),
             "rth_threshold_wh": thr,
             "e_rth_wh": e_rth,
@@ -265,7 +217,7 @@ class Brain:
                 u.update(self._transition(s, Phase.EXPLORE, f"goal_update goto {p}", ev))
                 u["target"] = None
             elif typ == "area":
-                self._build_area(g["area"])
+                self.agent.build_area(g["area"])
                 u["explore_idx"] = 0
                 u.update(self._transition(s, Phase.EXPLORE, "goal_update new area", ev))
             elif typ == "rtb":
@@ -639,18 +591,7 @@ class Brain:
             # vertical manoeuvre (land pad / takeoff point): no horizontal planning
             wps = [(gp[0], gp[1], gp[2])]
             return {"waypoints": wps, "path_goal": gp, "replan": False, "events": []}
-        # Tiered planning: hysteresis margin -> nominal margin -> minimum safe
-        # margin (drone radius + 1 m, still a hard constraint). Never leaves
-        # RETURN_BASE without a path when one exists at the minimum margin.
-        pp = self.p["planner"]
-        tiers = [(pp["plan_extra_m"], "hyst"), (0.0, "nominal"), (pp["drone_radius"] + 1.0 - self.margin(s), "min")]
-        res = None
-        for extra, tier in tiers:
-            res = self.planner.plan(s["pos"][:2], goal["p"], self.hard_circles(s, extra), self.soft_circles(s))
-            if res.ok:
-                if tier != "hyst":
-                    res.reason += f"/{tier}-margin"
-                break
+        res = self.agent.plan_path(s, goal["p"])
         if not res.ok:
             ev.append(self._ev(s, "dec", f"no path to {goal['kind']} goal: {res.reason}", decision="no_path", reason=res.reason))
             if goal["kind"] == "explore":
@@ -669,8 +610,11 @@ class Brain:
             return u
         cruise = self.mp["cruise_alt"]
         pts = res.path[1:]
-        wps = [(p[0], p[1], cruise) for p in pts[:-1]] + [(pts[-1][0], pts[-1][1], gp[2])]
-        if res.reason != "direct":
+        wps = [(p[0], p[1], self.agent.waypoint_alt(s, p, cruise)) for p in pts[:-1]] + [(pts[-1][0], pts[-1][1], gp[2])]
+        if res.reason.startswith("evasive"):
+            ev.append(self._ev(s, "dec", f"EVASIVE: inside hostile line of sight, exiting radially then {res.reason}",
+                               decision="evasive"))
+        elif res.reason != "direct":
             ev.append(self._ev(s, "plan", f"A* path to {goal['kind']} ({len(wps)} wps, {res.reason})"))
         u.update({"waypoints": wps, "path_goal": gp, "replan": False, "events": ev})
         return u
