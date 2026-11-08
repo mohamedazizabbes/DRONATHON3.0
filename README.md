@@ -74,7 +74,7 @@ GNSS spoof ramp, a station zone_add, a forged and a replayed command, a goto and
 | Collisions / danger-zone entries / off-target drops | **0 / 0 / 0** (all 10 runs) |
 | Casualties served | 4/5 in every run (the maximum with 4 kits; the EXPECTANT one waits) |
 | Landed safely | 10/10 |
-| Decision latency p95 | ≤ 9.3 ms worst run (budget 100 ms); reflex p95 ≤ 0.23 ms (budget 50 ms) |
+| Decision latency p95 | 4–11 ms on the dev laptop depending on load (budget 100 ms); reflex p95 < 0.3 ms (budget 50 ms) |
 | Drop error vs truth | 0.1 – 1.0 m (spec 1.5 m) |
 | GNSS spoof detection | 1.9 s (40 m ramp at 5 m/s) |
 | Forged / replayed commands | 100 % rejected |
