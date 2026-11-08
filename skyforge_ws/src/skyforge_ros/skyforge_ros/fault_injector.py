@@ -64,7 +64,14 @@ class FaultInjector(Node):
         if f.get("type") == "gust":  # forwarded to the world (P1's wind plugin bridge)
             self.pub_wind.publish(Vector3(x=float(f.get("wx", 5)), y=float(f.get("wy", 3)), z=float(f.get("dur_s", 30))))
         if f.get("type") == "jam" and "dur_s" in f:
-            self.create_timer(float(f["dur_s"]), lambda: self.pub_fault.publish(String(data=jdump({"type": "jam", "on": False}))))
+            holder = {}
+
+            def jam_off():  # one-shot (ROS timers repeat)
+                holder["t"].cancel()
+                self.pub_fault.publish(String(data=jdump({"type": "jam", "on": False})))
+                self.get_logger().warn("jam released")
+
+            holder["t"] = self.create_timer(float(f["dur_s"]), jam_off)
         self.pub_fault.publish(String(data=jdump(f)))
 
     def _offset_m(self):
