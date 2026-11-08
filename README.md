@@ -3,6 +3,7 @@
 </p>
 
 <p align="center">
+  <a href="https://www.youtube.com/watch?v=5pZ2y8-tONc"><img src="https://img.shields.io/badge/▶_Demo_video-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="Demo video"></a>
   <a href="docs/TECHNICAL_DOCUMENTATION.md"><img src="https://img.shields.io/badge/📘_Technical_documentation-0b3a46?style=for-the-badge" alt="Technical documentation"></a>
   <a href="https://raw.githack.com/mohamedazizabbes/DRONATHON3.0/main/docs/slides/deck.html"><img src="https://img.shields.io/badge/🎞_Slides_(live)-ff7a33?style=for-the-badge" alt="Slides"></a>
   <a href="docs/SKYFORGE_System_Design.pdf"><img src="https://img.shields.io/badge/📐_System_design-06202c?style=for-the-badge" alt="System design PDF"></a>
@@ -33,6 +34,13 @@
 - comes home before its battery runs out.
 
 > **No human touches the drone. Every decision is a formula, and every decision is explained in the mission log.**
+
+## ✦ Demo
+
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=5pZ2y8-tONc"><img src="https://img.youtube.com/vi/5pZ2y8-tONc/maxresdefault.jpg" alt="SKYFORGE demo video: autonomous mission in Gazebo" width="80%"></a><br>
+  <sub>▶ <a href="https://www.youtube.com/watch?v=5pZ2y8-tONc">Watch the full autonomous mission on YouTube</a></sub>
+</p>
 
 ## ✦ At a glance
 
