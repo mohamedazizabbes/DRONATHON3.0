@@ -51,6 +51,7 @@ class Start(str, Enum):
     DELAYED = "DEL"
     MINOR = "MIN"
     EXPECTANT = "EXP"
+    DECEASED = "DCD"  # likely deceased (FLIR + no breathing at close range); never declared by the drone
     UNKNOWN = "UNK"
 
 
@@ -59,6 +60,7 @@ URGENCY = {
     Start.DELAYED: 0.7,
     Start.MINOR: 0.3,
     Start.EXPECTANT: 0.1,
+    Start.DECEASED: 0.0,
     # Unknown (no thermal yet) is treated as DELAYED: over-prioritise rather than ignore.
     Start.UNKNOWN: 0.7,
 }
@@ -70,6 +72,7 @@ URGENCY_STEP_UP = {
     Start.DELAYED: Start.IMMEDIATE,
     Start.IMMEDIATE: Start.IMMEDIATE,
     Start.UNKNOWN: Start.IMMEDIATE,
+    Start.DECEASED: Start.DECEASED,
 }
 
 

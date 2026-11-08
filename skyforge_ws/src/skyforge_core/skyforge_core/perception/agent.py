@@ -202,6 +202,12 @@ class PerceptionAgent:
     def _merge_attrs(self, s: _TrackState, d: Detection) -> None:
         for k, v in d.attrs.items():
             s.track.attrs[k] = v
+        # breathing micro-motion (thermal/RGB at close range): track how long it has been ABSENT
+        if "breathing" in d.attrs:
+            if d.attrs["breathing"]:
+                s.track.attrs.pop("no_breath_since", None)
+            else:
+                s.track.attrs.setdefault("no_breath_since", d.stamp)
         if "detection_radius" in d.attrs:
             s.track.attrs["detection_radius"] = float(d.attrs["detection_radius"])
 
@@ -249,7 +255,11 @@ class PerceptionAgent:
                 self.pp["ambient_k"],
                 self.pp["warm_delta_k"],
                 self.pp["immobile_s"],
+                no_breath_s=(now - tr.attrs["no_breath_since"]) if "no_breath_since" in tr.attrs else 0.0,
+                deceased_delta_k=self.pp["deceased_delta_k"],
+                deceased_obs_s=self.pp["deceased_obs_s"],
             )
+            tr.attrs["likely_deceased"] = cat == Start.DECEASED
             if cat != tr.category:
                 tr.attrs["category_why"] = why
             tr.category = cat

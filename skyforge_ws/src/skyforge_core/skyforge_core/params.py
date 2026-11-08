@@ -36,6 +36,7 @@ DEFAULTS: dict[str, Any] = {
         "duplicate_max_floating_m": 45.0,  # drifting: identity gate grows with uncertainty
         "release_confirm_ticks": 3,  # release condition must hold this many decision ticks
         "lost_target_search_s": 25.0,
+        "assess_hover_s": 10.0,  # EXPECTANT target: hover at delivery altitude to assess breathing before release
     },
     "camera": {
         "width": 640,
@@ -74,6 +75,8 @@ DEFAULTS: dict[str, Any] = {
         "motion_window_s": 15.0,
         "motion_thresh_m": 0.8,
         "mine_proximity_m": 20.0,
+        "deceased_delta_k": 2.0,  # skin within this of ambient ...
+        "deceased_obs_s": 8.0,  # ... and no breathing seen for this long (close range) -> likely deceased
         "slow_radius_m": 25.0,
     },
     "drift": {

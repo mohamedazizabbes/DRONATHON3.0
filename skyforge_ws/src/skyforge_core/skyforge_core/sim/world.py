@@ -25,6 +25,7 @@ DEFAULT_SCENARIO = {
     "params": {
         "comm": {"shadow_polygons": [[[120, 55], [170, 55], [170, 95], [120, 95]]]},
         "energy": {"capacity_wh": 60.0},
+        "mission": {"kits": 6},
     },
     "wind": [2.0, 1.0],
     "visibility": 1.0,
@@ -36,7 +37,8 @@ DEFAULT_SCENARIO = {
         {"id": "T-DEL", "cls": "injured", "p": [150, 70], "size": 1.2, "temp_k": 308.5, "posture": "sitting", "moving": True, "cat": "DEL"},
         {"id": "T-MIN", "cls": "injured", "p": [195, -5], "size": 0.8, "temp_k": 309.0, "posture": "standing", "moving": True, "cat": "MIN"},
         {"id": "T-IMM-water", "cls": "injured", "p": [110, -45], "size": 1.8, "temp_k": 307.0, "posture": "lying", "moving": False, "cat": "IMM", "floating": True},
-        {"id": "T-EXP", "cls": "injured", "p": [205, 35], "size": 1.8, "temp_k": 296.0, "posture": "lying", "moving": False, "cat": "EXP"},
+        {"id": "T-EXP", "cls": "injured", "p": [205, 35], "size": 1.8, "temp_k": 299.5, "posture": "lying", "moving": False, "cat": "EXP", "breathing": True},
+        {"id": "T-DCD", "cls": "injured", "p": [25, 55], "size": 1.8, "temp_k": 295.4, "posture": "lying", "moving": False, "cat": "DCD", "breathing": False},
         # threats
         {"id": "T-mine-beach", "cls": "mine", "p": [92, 18], "size": 0.6},
         {"id": "T-mine-float", "cls": "mine", "p": [150, -40], "size": 0.8, "floating": True},
@@ -166,6 +168,8 @@ class World:
                 bbox = [u - s_px / 2, v - s_px / 2, u + s_px / 2, v + s_px / 2]  # centre = person
                 attrs = {"temp_k": round(o.attrs.get("temp_k", 309.0) + self.rng.gauss(0, 0.4), 1),
                          "posture": o.attrs.get("posture"), "moving": bool(o.attrs.get("moving", False))}
+                if alt < 12.0:  # breathing micro-motion is only resolvable at close range
+                    attrs["breathing"] = bool(o.attrs.get("breathing", True))
                 team.append({"class": "injured", "confidence": round(conf, 3), "bbox": bbox, "attrs": attrs})
             elif o.cls == Cls.HOSTILE:
                 bbox = [u - s_px / 2, v - s_px, u + s_px / 2, v]  # bottom centre = ground contact

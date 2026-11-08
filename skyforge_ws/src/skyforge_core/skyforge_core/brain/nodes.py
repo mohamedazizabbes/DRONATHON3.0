@@ -19,7 +19,7 @@ from ..geometry import dist2, segment_clear
 from ..mission_log import event
 from ..planning.agent import PlannerAgent
 from ..planning.intercept import expanding_square, search_step_from_sigma
-from ..domain import Cls, Phase, PHASE_FR, Track, Zone, zone_from_dict
+from ..domain import Cls, Phase, PHASE_FR, Start, Track, Zone, zone_from_dict
 from .state import DroneState, snapshot
 
 MAX_HOPS = 4
@@ -477,9 +477,19 @@ class Brain:
         point = self.intercept(s, tr)
         u["current_goal"] = self._goal("deliver", point, alt, id=tr.id)
         z = s["pos"][2]
+        if tr.attrs.get("likely_deceased"):
+            ev.append(self._ev(s, "dec", f"{tr.id} assessed LIKELY DECEASED ({tr.attrs.get('category_why', 'FLIR')}): "
+                                         f"kit kept for the living, position reported for recovery",
+                               decision="deceased", id=tr.id, pos=[round(tr.pos[0], 1), round(tr.pos[1], 1)]))
+            u["failed_ids"] = list(s.get("failed_ids", [])) + [tr.id]
+            u["target"] = None
+            u.update(self._transition(s, Phase.TRIAGE, "likely deceased, no kit", ev))
+            u["events"] = ev
+            return u
         if z <= alt + 0.8:
             if tgt.get("low_t") is None:
                 tgt["low_t"] = s["t"]
+            assessing = tr.category == Start.EXPECTANT and s["t"] - tgt["low_t"] < self.mp["assess_hover_s"]
             err = dist2(s["pos"], tr.pos)
             fresh = (s["t"] - tr.last_seen) <= 1.5
             v = s.get("vel", (0.0, 0.0, 0.0))
@@ -489,7 +499,7 @@ class Brain:
             nav_ok = s.get("gnss_ok", True)
             cond = err + 0.5 * tr.sigma <= self.mp["release_offset_m"] and fresh and steady and nav_ok
             tgt["ok_ticks"] = tgt.get("ok_ticks", 0) + 1 if cond else 0
-            if cond and tgt["ok_ticks"] >= self.mp["release_confirm_ticks"]:
+            if cond and not assessing and tgt["ok_ticks"] >= self.mp["release_confirm_ticks"]:
                 kits = s.get("kits", 0) - 1
                 ev.append(self._ev(
                     s, "dec", f"DELIVERY to {tr.id} ({tr.category.value}): offset {err:.2f}m <= {self.mp['delivery_radius']}m, kits left {kits}",
@@ -502,7 +512,7 @@ class Brain:
                 u.update(self._transition(s, Phase.TRIAGE, "kit released", ev))
                 u["events"] = ev
                 return u
-            if s["t"] - tgt["low_t"] > 6.0:
+            if s["t"] - tgt["low_t"] > 6.0 + (self.mp["assess_hover_s"] if tr.category == Start.EXPECTANT else 0.0):
                 tgt["retries"] = tgt.get("retries", 0) + 1
                 tgt["low_t"] = None
                 why = (f"track not seen for {s['t'] - tr.last_seen:.1f}s" if not fresh

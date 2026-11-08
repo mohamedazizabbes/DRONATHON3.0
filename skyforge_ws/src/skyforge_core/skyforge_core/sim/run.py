@@ -412,7 +412,7 @@ class MissionSim:
     # ------------------------------------------------------------ metrics
     def _finish(self) -> dict:
         self.log.close()
-        cas_truth = self.world.truth_of(Cls.INJURED)
+        cas_truth = [o for o in self.world.truth_of(Cls.INJURED) if o.attrs.get("cat") != "DCD"]  # living casualties
         served_order = [x["truth"] for x in self.deliveries if x["on_target"]]
         oracle = sorted([o.id for o in cas_truth], key=lambda i: -URGENCY[Start(next(o for o in cas_truth if o.id == i).attrs["cat"])])
         loc_err = []

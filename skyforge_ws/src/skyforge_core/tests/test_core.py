@@ -384,3 +384,32 @@ def test_evasive_exit_from_hostile_line_of_sight(P):
     assert math.hypot(exit_pt[0] - 100.0, exit_pt[1]) >= 40.0  # first leg leaves the ring
     assert ag.waypoint_alt(s, (95.0, 30.0), 25.0) == P["planner"]["evasive_alt"]
     assert ag.waypoint_alt(s, (0.0, 60.0), 25.0) == 25.0
+
+
+def test_flir_deceased_rules(P):
+    pp = P["perception"]
+    kw = dict(ambient_k=pp["ambient_k"], warm_delta_k=pp["warm_delta_k"], immobile_s=pp["immobile_s"],
+              deceased_delta_k=pp["deceased_delta_k"], deceased_obs_s=pp["deceased_obs_s"])
+    # ambient skin + no breathing for long enough, on land -> likely deceased
+    assert classify(295.5, "lying", False, 30, False, False, False, no_breath_s=10, **kw)[0] == Start.DECEASED
+    # same but breathing seen recently -> still EXPECTANT (alive until proven otherwise)
+    assert classify(295.5, "lying", False, 30, False, False, False, no_breath_s=2, **kw)[0] == Start.EXPECTANT
+    # cold skin IN WATER is never "deceased": possible hypothermia -> IMMEDIATE
+    assert classify(295.5, "lying", False, 30, True, False, False, no_breath_s=60, **kw)[0] == Start.IMMEDIATE
+    # cool but moving -> alive, DELAYED
+    assert classify(298.0, "sitting", True, 30, False, False, False, **kw)[0] == Start.DELAYED
+    # proximity to a mine never upgrades a DCD
+    assert classify(295.5, "lying", False, 30, False, False, True, no_breath_s=10, **kw)[0] == Start.DECEASED
+
+
+def test_deceased_never_gets_a_kit(P):
+    from skyforge_core.planning.agent import PlannerAgent
+
+    ag = PlannerAgent(P)
+    dcd = _cas("C9", (20.0, 0.0), Start.DECEASED)
+    dcd.attrs["likely_deceased"] = True
+    exp = _cas("C10", (150.0, 0.0), Start.EXPECTANT)
+    s = {"pos": (0.0, 0.0, 25.0), "casualties": [dcd, exp], "served_ids": [], "failed_ids": [], "battery_wh": 80.0,
+         "wind": (0, 0), "gnss_ok": True, "zones": [], "manual_zones": []}
+    res = ag.triage(s)
+    assert res.best.id == "C10" and all(c.id != "C9" for c in res.ranked)
