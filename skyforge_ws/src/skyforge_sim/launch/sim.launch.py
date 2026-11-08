@@ -2,7 +2,7 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, OpaqueFunction, SetEnvironmentVariable
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, OpaqueFunction, SetEnvironmentVariable, TimerAction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -41,7 +41,14 @@ def setup(context):
                           arguments=["-world", wname, "-file", os.path.join(share, "models", "skyforge_drone", "model.sdf"),
                                      "-name", "skyforge", "-x", "0", "-y", "0", "-z", "0.3"]))
     gz_server = ExecuteProcess(cmd=["gz", "sim", "-s", "-r", "--headless-rendering", world], output="screen")
-    gz_gui = ExecuteProcess(cmd=["gz", "sim", "-g"], output="screen", condition=IfCondition(LaunchConfiguration("gui")))
+    gz_gui = ExecuteProcess(cmd=["gz", "sim", "-g", "--gui-config", os.path.join(share, "config", "gui.config")],
+                            output="screen", condition=IfCondition(LaunchConfiguration("gui")))
+    follow = TimerAction(period=12.0, condition=IfCondition(LaunchConfiguration("gui")), actions=[
+        ExecuteProcess(cmd=["gz", "service", "-s", "/gui/follow/offset", "--reqtype", "gz.msgs.Vector3d", "--reptype", "gz.msgs.Boolean",
+                            "--timeout", "3000", "--req", "x: -14, y: -6, z: 7"], output="screen"),
+        ExecuteProcess(cmd=["gz", "service", "-s", "/gui/follow", "--reqtype", "gz.msgs.StringMsg", "--reptype", "gz.msgs.Boolean",
+                            "--timeout", "3000", "--req", 'data: "skyforge"'], output="screen"),
+    ])
     bridge = Node(package="ros_gz_bridge", executable="parameter_bridge", name="gz_bridge", output="screen",
                   parameters=[{"config_file": os.path.join(share, "config", "bridge.yaml"), "use_sim_time": True}])
     mover = Node(package="skyforge_sim", executable="mover_node", output="screen",
@@ -57,7 +64,7 @@ def setup(context):
                           "fault_script": LaunchConfiguration("fault_script")}.items(),
         condition=IfCondition(LaunchConfiguration("stack")),
     )
-    return [gz_server, gz_gui, bridge] + ([] if external else [mover]) + [weather, shim, hud, stack] + extra
+    return [gz_server, gz_gui, follow, bridge] + ([] if external else [mover]) + [weather, shim, hud, stack] + extra
 
 
 def generate_launch_description():
