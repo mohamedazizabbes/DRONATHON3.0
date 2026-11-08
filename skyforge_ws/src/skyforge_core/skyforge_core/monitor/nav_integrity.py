@@ -66,6 +66,8 @@ class NavIntegrity:
                 self.source = "odometry"
                 self.reason = f"spoofing: GNSS {self.last_d:.1f} m from inertial reference ({math.sqrt(d2):.1f} sigma)"
                 self.spoof_detect_t = t
+                # roll the output back onto the reference the spoofer could not drag
+                self.est = list(self.ref)
         else:
             self.good += 1
             self.bad = 0
