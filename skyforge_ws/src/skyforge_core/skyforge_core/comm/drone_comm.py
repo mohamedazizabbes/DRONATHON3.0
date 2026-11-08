@@ -79,6 +79,13 @@ class DroneComm:
             self.events.append({"ts": now, "type": "link", "msg": "comm: link down, buffering"})
         else:
             self.last_outage_s = now - (self.outage_start or now)
+            # proactive replay of everything that never left (in order); a station that does
+            # not implement our ack protocol (jury station) still gets the outage's messages
+            for seq, (prio, data, tx) in list(self.buffer.items.items()):
+                if not tx and self._tx(data):
+                    self.buffer.mark_transmitted(seq)
+                    self.buffer.mark_replayed(seq, now)
+                    self.stats["replayed"] += 1
             self.events.append({"ts": now, "type": "link", "msg": f"comm: link up after {self.last_outage_s:.1f}s, "
                                 f"{len(self.buffer)} msgs buffered"})
 

@@ -29,6 +29,14 @@ class SeaStateEstimator:
     def prior(self, wind) -> tuple[float, float]:
         return (self.current[0] + self.k_leeway * wind[0], self.current[1] + self.k_leeway * wind[1])
 
+    def update_baseline(self, v, var: float, wind, gain_max: float = 0.6) -> None:
+        """Long-baseline drift sample (re-acquired object): strong, gain from its variance."""
+        c = (v[0] - self.k_leeway * wind[0], v[1] - self.k_leeway * wind[1])
+        k = gain_max * (0.05**2) / (0.05**2 + var)  # 0.05 m/s: typical current knowledge
+        self.current[0] += k * (c[0] - self.current[0])
+        self.current[1] += k * (c[1] - self.current[1])
+        self.n_updates += 1
+
     def update(self, t: float, samples, wind) -> bool:
         """samples: iterable of (vx, vy, var_v) from floating tracks seen right now."""
         dt = 0.0 if self._t is None else max(0.0, t - self._t)

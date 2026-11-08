@@ -57,6 +57,7 @@ class OrchestratorNode(Node):
         self.all_tracks = []
         self.trajectory = []
         self.map_written = False
+        self._last_snap_t = -1e9
 
         self.create_subscription(Odometry, "/skyforge/odom", self.on_odom, 20)
         self.create_subscription(BatteryState, "/skyforge/battery", self.on_battery, 10)
@@ -189,7 +190,8 @@ class OrchestratorNode(Node):
                 self.pub_sonar.publish(String(data=jdump(a)))
             elif a["type"] == "mayday":
                 self.pub_snap.publish(String(data=jdump(a["snapshot"])))
-        if int(inp["t"] * 10) % 50 == 0:  # keep a fresh snapshot latched for sync
+        if inp["t"] - self._last_snap_t >= 5.0:  # keep a fresh snapshot latched for sync
+            self._last_snap_t = inp["t"]
             self.pub_snap.publish(String(data=jdump(snapshot(s))))
 
 

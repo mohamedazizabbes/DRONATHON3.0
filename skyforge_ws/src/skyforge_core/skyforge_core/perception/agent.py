@@ -198,7 +198,7 @@ class PerceptionAgent:
                 if gap >= self.pp["reid_stale_s"]:
                     long_v = ((g[0] - x_last) / gap, (g[1] - y_last) / gap)
                     var = (2.0 * self.dp["meas_sigma_floor"]) ** 2 / gap**2 + 0.02**2
-                    self.sea.update(stamp, [(long_v[0], long_v[1], var)], self.wind)
+                    self.sea.update_baseline(long_v, var, self.wind)
             self._update(st, *meas[mi], stamp)
             if long_v is not None:
                 st.kf.x[2], st.kf.x[3] = long_v  # best estimate of this object's drift
