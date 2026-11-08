@@ -158,10 +158,10 @@ Details are in the [technical documentation §15](docs/TECHNICAL_DOCUMENTATION.m
 | [`docs/`](docs) | [technical documentation](docs/TECHNICAL_DOCUMENTATION.md) ([PDF](docs/SKYFORGE_Technical_Documentation.pdf)), [interfaces](docs/INTERFACES.md), [architecture notes](docs/ARCHITECTURE.md), [system design PDF](docs/SKYFORGE_System_Design.pdf), [slides](docs/slides/deck.html), diagrams, CAD |
 
 ## ✦ Team
-AHMED BEN SALAH \n
-ANAS ABD ELMALEK CHERIF \n
-NASSIM MHAMDI \n
-MOHAMED AZIZ ABBES
+AHMED BEN SALAH <br>
+ANAS ABD ELMALEK CHERIF <br>
+NASSIM MHAMDI <br>
+MOHAMED AZIZ ABBES <br>
 | Role | Scope |
 |---|---|
 | Brain & communications | architecture, LangGraph orchestrator, PerceptionAgent and PlannerAgent, reflex, comm + security, Raspberry Pi, 2D simulator, tests |
