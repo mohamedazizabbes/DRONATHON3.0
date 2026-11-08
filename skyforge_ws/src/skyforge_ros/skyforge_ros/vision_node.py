@@ -56,6 +56,7 @@ class VisionNode(Node):
         cmap = self.get_parameter("classes").value
         self.remap = json.loads(cmap) if cmap else {}
         path = self.get_parameter("model").value
+        path = "" if path in ("none", "None") else path
         self.model = None
         if path:
             from ultralytics import YOLO  # also loads .onnx exports

@@ -48,7 +48,7 @@ class ReflexNode(Node):
         self.p = node_params(self)
         self.declare_parameter("backend", "px4")
         self.declare_parameter("px4_ns", "/fmu")
-        self.declare_parameter("status_topic", "vehicle_status_v1")  # PX4 >= 1.16; 'vehicle_status' before
+        self.declare_parameter("status_topic", "vehicle_status")  # PX4 1.15; use vehicle_status_v1 with PX4 >= 1.16
         self.backend = self.get_parameter("backend").value
         self.ctrl = ReflexController(self.p)
         self.energy = EnergyModel.from_params(self.p)

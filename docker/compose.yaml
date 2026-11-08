@@ -1,0 +1,49 @@
+# SKYFORGE services. All share the host network and one ROS_DOMAIN_ID.
+#   docker compose -f docker/compose.yaml build
+#   docker compose -f docker/compose.yaml up brain station foxglove      # with PX4 SITL running
+#   docker compose -f docker/compose.yaml run --rm sim2d                 # headless 2D mission (backup demo)
+#   BACKEND=twist docker compose -f docker/compose.yaml up brain station  # velocity-controlled Gazebo fallback
+x-common: &common
+  image: skyforge:jazzy
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+  network_mode: host
+  ipc: host
+  environment:
+    - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+    - SKYFORGE_CONFIG=/config/skyforge.yaml
+  volumes:
+    - ../skyforge_ws/src/skyforge_bringup/config:/config:ro
+    - ../runs:/ws/runs
+    - ../models:/models:ro
+
+services:
+  brain:  # orchestrator + perception agent + reflex/vehicle + comm + monitors + vision wrappers
+    <<: *common
+    command: >
+      ros2 launch skyforge_bringup mission.launch.py
+      config:=/config/skyforge.yaml
+      backend:=${BACKEND:-px4}
+      comm_mode:=${COMM_MODE:-local} pi_host:=${PI_HOST:-192.168.1.50}
+      jury_model:=${JURY_MODEL:-none} team_model:=${TEAM_MODEL:-none}
+      fault_script:=${FAULT_SCRIPT:-none}
+
+  station:  # ground station: UDP link + HTTP operator API on :8080
+    <<: *common
+    working_dir: /ws/runs
+    command: python3 -m skyforge_core.comm.station_server --config /config/skyforge.yaml
+
+  foxglove:  # Foxglove Studio connects to ws://localhost:8765
+    <<: *common
+    command: ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765
+
+  sim2d:  # full mission in the headless 2D simulator (no Gazebo): backup demo + KPIs
+    <<: *common
+    command: python3 -m skyforge_core.sim.run --out /ws/runs/sim2d ${SIM_ARGS:-}
+
+  # sim:  PX4 SITL + Gazebo Harmonic + Micro XRCE-DDS agent (owned by P1 Sim & Control).
+  # Example, to adapt to the image the team builds:
+  #   image: px4-gz-jazzy
+  #   network_mode: host
+  #   command: bash -c "MicroXRCEAgent udp4 -p 8888 & cd /PX4-Autopilot && make px4_sitl gz_x500_mono_cam_down"

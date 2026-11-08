@@ -44,7 +44,7 @@ class FaultInjector(Node):
             self.create_subscription(NavSatFix, self.get_parameter("gnss_in").value, self.on_fix, 10)
         self.timeline = []
         path = self.get_parameter("script").value
-        if path:
+        if path and path not in ("none", "None"):
             import yaml
 
             with open(path, encoding="utf-8") as f:

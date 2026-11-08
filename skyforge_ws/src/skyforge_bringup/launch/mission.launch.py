@@ -31,7 +31,8 @@ def generate_launch_description():
         DeclareLaunchArgument("team_model", default_value=""),
         DeclareLaunchArgument("vision", default_value="true", description="start the two vision_node wrappers"),
         DeclareLaunchArgument("fault_script", default_value=""),
-        DeclareLaunchArgument("use_sim_time", default_value="true"),
+        DeclareLaunchArgument("use_sim_time", default_value="false",
+                              description="true only if /clock is bridged from Gazebo, else all timers freeze"),
     ]
     sim_time = {"use_sim_time": PythonExpression(["'", LaunchConfiguration("use_sim_time"), "' == 'true'"])}
 
