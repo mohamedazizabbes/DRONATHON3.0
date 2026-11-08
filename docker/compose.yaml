@@ -42,6 +42,17 @@ services:
     <<: *common
     command: python3 -m skyforge_core.sim.run --out /ws/runs/sim2d ${SIM_ARGS:-}
 
+  gzsim:
+    <<: *common
+    image: skyforge:jazzy-sim
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.sim
+    command: >
+      ros2 launch skyforge_sim sim.launch.py
+      jury_model:=${JURY_MODEL:-none} team_model:=${TEAM_MODEL:-none}
+      fault_script:=${FAULT_SCRIPT:-none}
+
   # sim:  PX4 SITL + Gazebo Harmonic + Micro XRCE-DDS agent (owned by P1 Sim & Control).
   # Example, to adapt to the image the team builds:
   #   image: px4-gz-jazzy

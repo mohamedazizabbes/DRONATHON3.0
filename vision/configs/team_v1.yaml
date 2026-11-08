@@ -1,0 +1,19 @@
+names: [injured_lying, injured_sitting, person_standing, injured_water, hostile_unit]
+split: {train: 0.7, val: 0.2, test: 0.1}
+sources:
+  - name: sim
+    path: simgen/out_v1
+    class_map: {0: 0, 1: 1, 2: 2, 3: 3, 4: 4}
+    group_regex: '^(g\d+)_\d+$'
+    train_repeat: 4
+    keep_background: 1.0
+  - name: sds
+    path: data/sds2_tiles
+    class_map: {4: 3}
+    group_regex: '^(.*)_t\d+_\d+$'
+    train_repeat: 2
+    keep_background: 1.0
+  - name: armed
+    path: data/weapons2
+    class_map: {0: 4, 5: 2}
+    keep_background: 0.0

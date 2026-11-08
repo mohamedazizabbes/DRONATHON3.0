@@ -30,10 +30,18 @@ from std_msgs.msg import Float32, String
 
 from .conv import QOS_SENSOR
 
+POSTURE_CLASSES = {
+    "injured_lying": ("injured", {"posture": "lying"}),
+    "injured_sitting": ("injured", {"posture": "sitting"}),
+    "person_standing": ("injured", {"posture": "standing"}),
+    "person_waving": ("injured", {"posture": "waving"}),
+    "injured_water": ("injured", {"posture": "lying", "in_water": True}),
+}
+
 
 def image_to_numpy(m: Image) -> np.ndarray:
-    ch = {"rgb8": 3, "bgr8": 3, "rgba8": 4, "bgra8": 4, "mono8": 1, "32FC1": 1, "16UC1": 1}.get(m.encoding, 3)
-    dtype = np.float32 if m.encoding == "32FC1" else np.uint16 if m.encoding == "16UC1" else np.uint8
+    ch = {"rgb8": 3, "bgr8": 3, "rgba8": 4, "bgra8": 4, "mono8": 1, "32FC1": 1, "16UC1": 1, "mono16": 1}.get(m.encoding, 3)
+    dtype = np.float32 if m.encoding == "32FC1" else np.uint16 if m.encoding in ("16UC1", "mono16") else np.uint8
     a = np.frombuffer(m.data, dtype=dtype).reshape(m.height, -1)[:, : m.width * ch].reshape(m.height, m.width, ch)
     if m.encoding in ("rgb8", "rgba8"):
         a = a[:, :, 2::-1] if ch >= 3 else a  # -> BGR for ultralytics/opencv
@@ -50,6 +58,7 @@ class VisionNode(Node):
         self.declare_parameter("classes", "")
         self.declare_parameter("image_topic", "/cam/rgb")
         self.declare_parameter("thermal_topic", "")
+        self.declare_parameter("thermal_scale", 0.01)
         self.role = self.get_parameter("role").value
         self.conf = float(self.get_parameter("conf").value)
         self.imgsz = int(self.get_parameter("imgsz").value)
@@ -66,6 +75,7 @@ class VisionNode(Node):
         else:
             self.get_logger().warn("no model given: publishing empty detections (pipeline test mode)")
         self.thermal = None
+        self.thermal_scale = float(self.get_parameter("thermal_scale").value)
         tt = self.get_parameter("thermal_topic").value
         if tt:
             self.create_subscription(Image, tt, lambda m: setattr(self, "thermal", m), QOS_SENSOR)
@@ -90,13 +100,18 @@ class VisionNode(Node):
                 for b in res.boxes:
                     k = int(b.cls)
                     x1, y1, x2, y2 = (float(v) for v in b.xyxy[0])
-                    d = {"class": self.remap.get(str(k), names.get(k, str(k))), "confidence": round(float(b.conf), 3),
-                         "bbox": [round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1)], "attrs": {}}
+                    raw = self.remap.get(str(k), names.get(k, str(k)))
+                    cls, attrs = POSTURE_CLASSES.get(raw, (raw, {}))
+                    d = {"class": cls, "confidence": round(float(b.conf), 3),
+                         "bbox": [round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1)], "attrs": dict(attrs)}
                     if th is not None and th.ndim == 2:
                         sy, sx = th.shape[0] / m.height, th.shape[1] / m.width
                         roi = th[int(y1 * sy): max(int(y2 * sy), int(y1 * sy) + 1), int(x1 * sx): max(int(x2 * sx), int(x1 * sx) + 1)]
                         if roi.size:
-                            d["attrs"]["temp_k"] = round(float(np.mean(roi)), 1)  # radiometric image in kelvin
+                            k_val = float(np.mean(roi))
+                            if self.thermal.encoding in ("16UC1", "mono16"):
+                                k_val *= self.thermal_scale
+                            d["attrs"]["temp_k"] = round(k_val, 1)  # radiometric image in kelvin
                     dets.append(d)
             out = {"stamp": stamp, "source": self.role, "image": [m.width, m.height], "detections": dets}
             self.pub.publish(String(data=json.dumps(out, separators=(",", ":"))))
