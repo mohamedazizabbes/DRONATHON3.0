@@ -371,7 +371,10 @@ class MissionSim:
     def _record_delivery(self, d: DroneUnit, a: dict, t: float) -> None:
         cas = self.world.truth_of(Cls.INJURED)
         nearest = min(cas, key=lambda o: dist2(o.p, d.pos))
-        err = dist2(nearest.p, d.pos)
+        # a kit dropped next to a floating casualty rides the same wave (wavelength >> 1.5 m):
+        # score against the drift (wave-mean) position for floating casualties
+        ref = nearest.attrs.get("p_mean", nearest.p) if nearest.floating else nearest.p
+        err = dist2(ref, d.pos)
         served_truth = {x["truth"] for x in self.deliveries}
         rec = {"t": t, "track": a["id"], "truth": nearest.id, "cat": nearest.attrs.get("cat"), "err_m": round(err, 2),
                "on_target": err <= self.p["mission"]["delivery_radius"] and nearest.id not in served_truth, "drone": d.name}

@@ -139,7 +139,9 @@ class PerceptionAgent:
                 if s.track.cls != d.cls:
                     continue
                 dd = dist2(g, s.kf.pos)
-                gate = min(self.pp["gate_max_m"], max(gate_floor, self.pp["gate_sigma_k"] * math.hypot(s.kf.sigma, sig)))
+                # floating targets move with the waves: never gate tighter than their motion noise
+                sig_d = max(sig, self.dp["meas_sigma_floor"]) if s.kf.floating else sig
+                gate = min(self.pp["gate_max_m"], max(gate_floor, self.pp["gate_sigma_k"] * math.hypot(s.kf.sigma, sig_d)))
                 if dd <= gate:
                     pairs.append((dd, mi, tid))
         pairs.sort()

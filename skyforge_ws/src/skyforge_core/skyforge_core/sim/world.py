@@ -131,10 +131,14 @@ class World:
         wd = self.wave.get("dir", [0.0, 1.0])
         for o in self.objects:
             if o.floating:
+                # p_mean drifts with the current; the wave orbital motion is a zero-mean
+                # oscillation around it shared by everything floating nearby (kit included)
+                pm = o.attrs.setdefault("p_mean", list(o.p))
                 phi = o.attrs.setdefault("_wave_phase", self.rng.uniform(0, 2 * math.pi))
-                osc = A * (2 * math.pi / T) * math.cos(2 * math.pi * self.t / T + phi) if A > 0 else 0.0
-                o.p[0] += (drift[0] + osc * wd[0]) * dt
-                o.p[1] += (drift[1] + osc * wd[1]) * dt
+                pm[0] += drift[0] * dt
+                pm[1] += drift[1] * dt
+                osc = A * math.sin(2 * math.pi * self.t / T + phi) if A > 0 else 0.0
+                o.p[0], o.p[1] = pm[0] + osc * wd[0], pm[1] + osc * wd[1]
                 if not in_any_polygon(o.p, self.water):
                     o.floating = False  # washed ashore: stops drifting
         for m in self.movers:
