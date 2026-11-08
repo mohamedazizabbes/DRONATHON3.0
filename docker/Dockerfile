@@ -21,6 +21,7 @@ RUN . /opt/ros/jazzy/setup.sh && colcon build --packages-select px4_msgs --cmake
 COPY skyforge_ws/src/ src/
 RUN . /opt/ros/jazzy/setup.sh && . install/setup.sh \
     && colcon build --packages-skip px4_msgs --cmake-args -DCMAKE_BUILD_TYPE=Release \
+    && . install/setup.sh \
     && python3 -m pytest -q src/skyforge_core/tests -k "not short_sim" -p no:cacheprovider
 
 COPY docker/entrypoint.sh /entrypoint.sh

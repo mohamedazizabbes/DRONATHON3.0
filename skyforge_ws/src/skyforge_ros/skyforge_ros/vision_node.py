@@ -58,6 +58,7 @@ class VisionNode(Node):
         self.declare_parameter("classes", "")
         self.declare_parameter("image_topic", "/cam/rgb")
         self.declare_parameter("thermal_topic", "")
+        self.declare_parameter("thermal_scale", 0.01)
         self.role = self.get_parameter("role").value
         self.conf = float(self.get_parameter("conf").value)
         self.imgsz = int(self.get_parameter("imgsz").value)
@@ -74,6 +75,7 @@ class VisionNode(Node):
         else:
             self.get_logger().warn("no model given: publishing empty detections (pipeline test mode)")
         self.thermal = None
+        self.thermal_scale = float(self.get_parameter("thermal_scale").value)
         tt = self.get_parameter("thermal_topic").value
         if tt:
             self.create_subscription(Image, tt, lambda m: setattr(self, "thermal", m), QOS_SENSOR)
@@ -106,7 +108,10 @@ class VisionNode(Node):
                         sy, sx = th.shape[0] / m.height, th.shape[1] / m.width
                         roi = th[int(y1 * sy): max(int(y2 * sy), int(y1 * sy) + 1), int(x1 * sx): max(int(x2 * sx), int(x1 * sx) + 1)]
                         if roi.size:
-                            d["attrs"]["temp_k"] = round(float(np.mean(roi)), 1)  # radiometric image in kelvin
+                            k_val = float(np.mean(roi))
+                            if self.thermal.encoding in ("16UC1", "mono16"):
+                                k_val *= self.thermal_scale
+                            d["attrs"]["temp_k"] = round(k_val, 1)  # radiometric image in kelvin
                     dets.append(d)
             out = {"stamp": stamp, "source": self.role, "image": [m.width, m.height], "detections": dets}
             self.pub.publish(String(data=json.dumps(out, separators=(",", ":"))))
