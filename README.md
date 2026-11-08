@@ -5,6 +5,7 @@
 <p align="center">
   <a href="https://www.youtube.com/watch?v=5pZ2y8-tONc"><img src="https://img.shields.io/badge/▶_Demo_video-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="Demo video"></a>
   <a href="docs/TECHNICAL_DOCUMENTATION.md"><img src="https://img.shields.io/badge/📘_Technical_documentation-0b3a46?style=for-the-badge" alt="Technical documentation"></a>
+  <a href="docs/SKYFORGE_Technical_Documentation.pdf"><img src="https://img.shields.io/badge/📄_Dossier_technique_(PDF)-12323b?style=for-the-badge" alt="Technical documentation PDF"></a>
   <a href="docs/slides/deck.html"><img src="https://img.shields.io/badge/🎞_Slides-ff7a33?style=for-the-badge" alt="Slides"></a>
   <a href="docs/SKYFORGE_System_Design.pdf"><img src="https://img.shields.io/badge/📐_System_design-06202c?style=for-the-badge" alt="System design PDF"></a>
   <a href="docs/INTERFACES.md"><img src="https://img.shields.io/badge/🔌_Interfaces-5fe0d2?style=for-the-badge&logoColor=black" alt="Interfaces"></a>
@@ -154,7 +155,7 @@ Details are in the [technical documentation §15](docs/TECHNICAL_DOCUMENTATION.m
 | [`skyforge_ws/src/skyforge_interfaces`](skyforge_ws/src/skyforge_interfaces) · [`skyforge_bringup`](skyforge_ws/src/skyforge_bringup) | ROS 2 messages · launch files and the single parameter file |
 | [`vision/`](vision) · [`models/`](models) | dataset, training, evaluation, export and scene-generation pipeline · trained YOLO11 detectors (`.pt`, `.onnx`) |
 | [`deploy/raspberry_pi`](deploy/raspberry_pi) · [`docker/`](docker) · [`tools/`](tools) | Pi comm bridge · Jazzy and simulation images · one-command sim launch, report viewer |
-| [`docs/`](docs) | [technical documentation](docs/TECHNICAL_DOCUMENTATION.md), [interfaces](docs/INTERFACES.md), [architecture notes](docs/ARCHITECTURE.md), [system design PDF](docs/SKYFORGE_System_Design.pdf), [slides](docs/slides/deck.html), diagrams, CAD |
+| [`docs/`](docs) | [technical documentation](docs/TECHNICAL_DOCUMENTATION.md) ([PDF](docs/SKYFORGE_Technical_Documentation.pdf)), [interfaces](docs/INTERFACES.md), [architecture notes](docs/ARCHITECTURE.md), [system design PDF](docs/SKYFORGE_System_Design.pdf), [slides](docs/slides/deck.html), diagrams, CAD |
 
 ## ✦ Team
 

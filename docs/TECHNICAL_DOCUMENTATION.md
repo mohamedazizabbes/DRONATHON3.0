@@ -9,6 +9,7 @@
 | Repository | `mohamedazizabbes/DRONATHON3.0` (branch `main`) |
 | Stack | ROS 2 Jazzy · Gazebo Harmonic · PX4 SITL (or velocity-controlled model) · Python 3.10+ · LangGraph · YOLO11 |
 | Demo video | [youtube.com/watch?v=5pZ2y8-tONc](https://www.youtube.com/watch?v=5pZ2y8-tONc) |
+| PDF version | [SKYFORGE_Technical_Documentation.pdf](SKYFORGE_Technical_Documentation.pdf) (rebuild: `python tools/build_doc_pdf.py`) |
 | Companion documents | [README](../README.md) · [Interfaces](INTERFACES.md) · [Architecture notes](ARCHITECTURE.md) · [Original system design (PDF)](SKYFORGE_System_Design.pdf) · [Slides](slides/deck.html) · [Raspberry Pi guide](../deploy/raspberry_pi/README.md) |
 
 ---
@@ -136,7 +137,7 @@ The airframe is a **fixed-wing VTOL**:
 
 The SolidWorks assembly is exported to Gazebo (`skyforge_sim/models/skyforge_drone`; conversion script `vision/scripts/cad_to_gz.py`).
 
-The software depends on these conception choices. Each one was derived from a failure observed in simulation:
+The software depends on these conception choices. The camera tilt and the kit's IR strobe were derived from failures observed in simulation; the others come from the original system design:
 
 | Item | Requirement | Reason |
 |---|---|---|
