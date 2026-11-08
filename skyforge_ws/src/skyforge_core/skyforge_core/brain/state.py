@@ -53,6 +53,8 @@ class DroneState(TypedDict, total=False):
     mayday_sent: bool
     handover: bool  # drone 2 started from a MAYDAY snapshot
     energy_scale: float  # online power-model calibration factor
+    retry_after: dict  # casualty id -> time a paused delivery may be retried
+    abort_rounds: dict  # casualty id -> delivery rounds aborted
     replan: bool
     triage_sig: str
     triage_t: float
@@ -111,6 +113,8 @@ def initial_state(params: dict, t: float = 0.0) -> DroneState:
         mayday_sent=False,
         handover=False,
         energy_scale=1.0,
+        retry_after={},
+        abort_rounds={},
         replan=True,
         triage_sig="",
         triage_t=-1e9,

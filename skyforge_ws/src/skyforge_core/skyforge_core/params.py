@@ -18,6 +18,8 @@ DEFAULTS: dict[str, Any] = {
         "delivery_alt": 5.0,
         "delivery_radius": 1.5,  # F7: track must be within this of the drop point
         "delivery_max_retries": 3,
+        "delivery_rounds": 3,  # paused deliveries are retried up to this many rounds before giving up
+        "delivery_cooldown_s": 30.0,
         "release_offset_m": 1.0,  # estimated offset required to release (spec radius 1.5)
         "release_max_speed": 0.6,  # m/s relative to the casualty
         "takeoff_tol": 1.0,
@@ -95,6 +97,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "zones": {
         "safety": {"mine": 15.0, "weapon": 10.0, "hostile_unit": 25.0},
+        "safety_submerged_mine": 12.0,  # mines found by magnetometer/sonar (below the surface)
         "sigma_k": 2.0,
         "wind_k": 0.5,  # metres of margin per m/s of wind
         "los_factor": 1.6,  # hostile line-of-sight soft ring = radius * this
@@ -181,6 +184,37 @@ DEFAULTS: dict[str, Any] = {
         "recover_consecutive": 20,
         "fix_timeout_s": 1.0,
         "min_sats": 6,
+    },
+    # Mine detection layer 2: magnetometer (MAD)
+    "magnetic": {
+        "enabled": True,
+        "noise_nt": 0.15,  # platform noise (fluxgate on a boom), 1 sigma
+        "k_sigma": 6.0,  # event threshold = k_sigma * noise
+        "bg_tau_s": 60.0,
+        "close_s": 1.0,
+        "fit_radius_m": 45.0,
+        "grid_half_m": 30.0,
+        "grid_step_m": 2.0,
+        "max_depth_m": 20.0,
+        "depth_step_m": 2.0,
+        "min_r2": 0.5,
+        "max_samples": 6000,
+        "confirm_conf": 0.6,  # stronger contacts confirm a mine on their own, weaker ones ask for a sonar dip
+        "weapon_attribution_m": 5.0,  # a ferrous anomaly on a known weapon is the weapon, not a mine
+    },
+    # Mine detection layer 3: dipping sonar (winched transducer, drone hovering low over water)
+    "sonar": {
+        "enabled": True,
+        "survey": True,  # sonar stations over water (deep mines invisible to camera and magnetometer)
+        "range_m": 60.0,
+        "station_spacing_m": 95.0,
+        "dip_alt": 3.0,
+        "dwell_s": 4.0,
+        "task_radius_m": 70.0,  # do a pending dip when it is this close to the drone
+        "task_timeout_s": 60.0,
+        "standoff_extra_m": 3.0,
+        "confirm_conf": 0.5,
+        "range_sigma_m": 1.0,
     },
     "orchestrator": {"engine": "langgraph", "rate_hz": 10.0},
     "logging": {"dir": "runs"},

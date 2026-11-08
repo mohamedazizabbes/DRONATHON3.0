@@ -86,7 +86,8 @@ class PlannerAgent:
     @staticmethod
     def pending(s) -> list[Track]:
         done = set(s.get("served_ids", [])) | set(s.get("failed_ids", []))
-        return [t for t in s.get("casualties", []) if t.id not in done]
+        later = {k for k, v in s.get("retry_after", {}).items() if v > s.get("t", 0.0)}  # paused deliveries
+        return [t for t in s.get("casualties", []) if t.id not in done and t.id not in later]
 
     def vg(self, s, toward) -> float:
         pos = s["pos"]

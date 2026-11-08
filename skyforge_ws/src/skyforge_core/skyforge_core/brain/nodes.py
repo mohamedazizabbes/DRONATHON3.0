@@ -482,7 +482,8 @@ class Brain:
             u["events"] = ev
             return u
         alt = self.mp["delivery_alt"]
-        point = self.intercept(s, tr)
+        lead = 1.0 / max(self.p["reflex"]["kp_pos"], 0.1)
+        point = (tr.pos[0] + tr.vel[0] * lead, tr.pos[1] + tr.vel[1] * lead)
         u["current_goal"] = self._goal("deliver", point, alt, id=tr.id)
         z = s["pos"][2]
         if tr.attrs.get("likely_deceased"):
@@ -528,8 +529,18 @@ class Brain:
                        else f"offset {err:.1f}m (+0.5 sigma {0.5 * tr.sigma:.1f})" if err + 0.5 * tr.sigma > self.mp["release_offset_m"]
                        else "not steady")
                 if tgt["retries"] >= self.mp["delivery_max_retries"]:
-                    ev.append(self._ev(s, "dec", f"delivery to {tr.id} aborted after {tgt['retries']} tries ({why})", decision="abort"))
-                    u["failed_ids"] = list(s.get("failed_ids", [])) + [tr.id]
+                    rounds = dict(s.get("abort_rounds", {}))
+                    rounds[tr.id] = rounds.get(tr.id, 0) + 1
+                    u["abort_rounds"] = rounds
+                    if rounds[tr.id] >= self.mp["delivery_rounds"]:
+                        ev.append(self._ev(s, "dec", f"delivery to {tr.id} given up after {rounds[tr.id]} rounds ({why})", decision="abort"))
+                        u["failed_ids"] = list(s.get("failed_ids", [])) + [tr.id]
+                    else:
+                        retry = dict(s.get("retry_after", {}))
+                        retry[tr.id] = s["t"] + self.mp["delivery_cooldown_s"]
+                        u["retry_after"] = retry
+                        ev.append(self._ev(s, "dec", f"delivery to {tr.id} paused ({why}); retry in {self.mp['delivery_cooldown_s']:.0f}s "
+                                                     f"(round {rounds[tr.id]}/{self.mp['delivery_rounds']})", decision="abort"))
                     u["target"] = None
                     u.update(self._transition(s, Phase.TRIAGE, "delivery not confirmed", ev))
                     u["events"] = ev
@@ -605,6 +616,9 @@ class Brain:
         moved = prev is None or dist2(prev, gp) > self.p["planner"]["replan_move_m"] or abs(prev[2] - gp[2]) > 0.5
         if not (moved or s.get("replan") or not s.get("waypoints")):
             return {"events": []}
+        if goal["kind"] == "deliver" and dist2(s["pos"], gp) < 15.0:
+            # final approach over a moving casualty: waypoint follows it every tick
+            return {"waypoints": [(gp[0], gp[1], gp[2])], "path_goal": gp, "replan": False, "events": []}
         if goal["kind"] in ("land", "mayday_land", "takeoff"):
             # vertical manoeuvre (land pad / takeoff point): no horizontal planning
             wps = [(gp[0], gp[1], gp[2])]
