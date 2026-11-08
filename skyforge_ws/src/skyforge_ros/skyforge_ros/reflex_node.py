@@ -206,7 +206,7 @@ class ReflexNode(Node):
                              battery_pct=self.battery_pct, provisional=self.provisional)
         vel = out.vel
         if self.phase == "LANDED":
-            vel = (0.0, 0.0, -0.5)
+            vel = (0.0, 0.0, -0.5) if self.pos[2] > 0.15 else (0.0, 0.0, 0.0)
         if self.backend == "px4":
             self._send_px4(vel, out.yaw)
             if self.phase == "LANDED" and self.armed and self.pos[2] < 0.3:

@@ -184,7 +184,7 @@ skyforge:
   health:
     motor_sat_level: 0.95
     motor_sat_s: 1.0
-    odom_timeout_s: 0.5
+    odom_timeout_s: 2.0
     cam_timeout_s: 3.0
     v_min_cell: 3.3
     temp_max_c: 85.0

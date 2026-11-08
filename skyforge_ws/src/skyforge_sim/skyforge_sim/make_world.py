@@ -19,6 +19,7 @@ HEAD = """<?xml version="1.0"?>
   <light type="directional" name="sun"><cast_shadows>false</cast_shadows><pose>0 0 100 0 0 0</pose>
     <diffuse>0.95 0.93 0.88 1</diffuse><specular>0.3 0.3 0.3 1</specular><direction>0.3 0.2 -1</direction></light>
   <model name="sea"><static>true</static><pose>{sea_x} {sea_y} 0 0 0 0</pose><link name="l">
+    <collision name="c"><geometry><box><size>{sea_w} {sea_h} 0.02</size></box></geometry></collision>
     <visual name="v"><geometry><box><size>{sea_w} {sea_h} 0.02</size></box></geometry>
     <material><ambient>0.05 0.3 0.45 1</ambient><diffuse>0.05 0.3 0.45 1</diffuse><specular>0.5 0.5 0.5 1</specular></material></visual></link></model>
   <model name="beach"><static>true</static><pose>{beach_x} {beach_y} 0 0 0 0</pose><link name="l">
@@ -28,6 +29,8 @@ HEAD = """<?xml version="1.0"?>
   <model name="home_pad"><static>true</static><pose>{hx} {hy} 0.015 0 0 0</pose><link name="l">
     <visual name="v"><geometry><cylinder><radius>1.5</radius><length>0.01</length></cylinder></geometry>
     <material><ambient>0.2 0.6 0.2 1</ambient><diffuse>0.2 0.6 0.2 1</diffuse></material></visual></link></model>\n"""
+
+SIM_OVERRIDES = {"health": {"odom_timeout_s": 2.0}}
 
 THERMAL = '<plugin filename="gz-sim-thermal-system" name="gz::sim::systems::Thermal"><temperature>{t}</temperature></plugin>'
 
@@ -144,6 +147,8 @@ def write_config(scenario, base_yaml, out_yaml):
     root = cfg.setdefault("skyforge", {})
     root["obstacles"] = [{"id": o["id"], "p": list(o["p"]), "r": float(o["r"]), "h": float(o["h"])} for o in scenario.get("obstacles", [])]
     for section, values in scenario.get("params", {}).items():
+        root.setdefault(section, {}).update(values)
+    for section, values in SIM_OVERRIDES.items():
         root.setdefault(section, {}).update(values)
     Path(out_yaml).write_text(yaml.safe_dump(cfg, sort_keys=False))
 
