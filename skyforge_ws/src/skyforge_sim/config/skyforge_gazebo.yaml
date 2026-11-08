@@ -19,7 +19,7 @@ skyforge:
     waypoint_tol: 2.5
     triage_policy: hybrid
     preempt_urgency: 0.95
-    kits: 4
+    kits: 6
     coverage_target: 0.97
     switch_hysteresis: 1.25
     duplicate_radius_m: 6.0
