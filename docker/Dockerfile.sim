@@ -2,6 +2,8 @@ FROM skyforge:jazzy
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get -o Acquire::Retries=10 update && apt-get -o Acquire::Retries=10 -o Acquire::http::Timeout=60 install -y --no-install-recommends ros-jazzy-ros-gz libegl1 libgl1-mesa-dri \
     && rm -rf /var/lib/apt/lists/*
+RUN pip3 install --no-cache-dir --break-system-packages --retries 10 --timeout 120 torch torchvision --index-url https://download.pytorch.org/whl/cpu \
+    && pip3 install --no-cache-dir --break-system-packages --retries 10 --timeout 120 ultralytics onnxruntime "numpy<2"
 COPY skyforge_ws/src/ src/
 RUN . /opt/ros/jazzy/setup.sh && . install/setup.sh \
     && colcon build --packages-skip px4_msgs --cmake-args -DCMAKE_BUILD_TYPE=Release
