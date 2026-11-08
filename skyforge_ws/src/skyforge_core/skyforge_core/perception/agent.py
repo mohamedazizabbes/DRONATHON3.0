@@ -232,7 +232,8 @@ class PerceptionAgent:
 
     # ------------------------------------------------------------ internals
     def _birth(self, d: Detection, g, sig: float, stamp: float) -> None:
-        floating = in_any_polygon(g, self.water)
+        # in water if the coastline map says so OR the detector's posture class does (injured_water)
+        floating = in_any_polygon(g, self.water) or bool(d.attrs.get("in_water", False))
         prior = self.sea.prior(self.wind) if floating else (0.0, 0.0)
         kf = DriftKF(g, sig, floating, prior, self.dp["q_pos"], self.dp["q_vel"], self.dp["max_sigma"], self.dp["vel_sigma0"],
                      self.dp["max_speed_dev"], self.dp["vel_sigma_floor"], self.dp["meas_sigma_floor"])

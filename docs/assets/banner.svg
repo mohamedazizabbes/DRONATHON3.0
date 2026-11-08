@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="420" viewBox="0 0 1280 420" role="img" aria-labelledby="t d">
+  <title id="t">SKYFORGE - autonomous coastal rescue drone</title>
+  <desc id="d">Dronathon 3.0 banner: a VTOL rescue drone over a night sea with sonar rings, a flight path, casualties and mines.</desc>
+  <defs>
+    <linearGradient id="sea" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#030b12"/>
+      <stop offset="0.55" stop-color="#06202c"/>
+      <stop offset="1" stop-color="#0b3a46"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.78" cy="0.5" r="0.45">
+      <stop offset="0" stop-color="#5fe0d2" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#5fe0d2" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="title" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#fbf6ee"/>
+      <stop offset="1" stop-color="#cfe9e4"/>
+    </linearGradient>
+    <linearGradient id="hull" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e9eef0"/>
+      <stop offset="1" stop-color="#9fb2b8"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#5fe0d2" stroke-opacity="0.06" stroke-width="1"/>
+    </pattern>
+    <clipPath id="frame"><rect x="0" y="0" width="1280" height="420" rx="22"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#frame)">
+    <rect width="1280" height="420" fill="url(#sea)"/>
+    <rect width="1280" height="420" fill="url(#grid)"/>
+    <rect width="1280" height="420" fill="url(#glow)"/>
+
+    <!-- coastline (beach to the north-east) -->
+    <path d="M640 0 C700 60 760 40 820 90 C880 140 960 110 1040 150 C1120 190 1190 160 1280 200 L1280 0 Z" fill="#c9b48a" fill-opacity="0.13"/>
+    <path d="M640 0 C700 60 760 40 820 90 C880 140 960 110 1040 150 C1120 190 1190 160 1280 200" fill="none" stroke="#e7d3a6" stroke-opacity="0.35" stroke-width="1.5"/>
+
+    <!-- sonar rings around the drone -->
+    <g transform="translate(985 250)" fill="none" stroke="#5fe0d2">
+      <circle r="60" stroke-opacity="0.35"><animate attributeName="r" values="40;170" dur="4s" repeatCount="indefinite"/><animate attributeName="stroke-opacity" values="0.45;0" dur="4s" repeatCount="indefinite"/></circle>
+      <circle r="60" stroke-opacity="0.35"><animate attributeName="r" values="40;170" dur="4s" begin="2s" repeatCount="indefinite"/><animate attributeName="stroke-opacity" values="0.45;0" dur="4s" begin="2s" repeatCount="indefinite"/></circle>
+      <circle r="110" stroke-opacity="0.12" stroke-dasharray="2 6"/>
+      <circle r="165" stroke-opacity="0.08" stroke-dasharray="2 8"/>
+    </g>
+
+    <!-- lawnmower flight path -->
+    <path d="M700 380 H1230 V330 H720 V285 H1230" fill="none" stroke="#ff7a33" stroke-opacity="0.75" stroke-width="2" stroke-dasharray="7 7">
+      <animate attributeName="stroke-dashoffset" values="0;-28" dur="1.2s" repeatCount="indefinite"/>
+    </path>
+
+    <!-- mine with exclusion zone -->
+    <g transform="translate(1150 120)">
+      <circle r="34" fill="#ff4d57" fill-opacity="0.12" stroke="#ff4d57" stroke-opacity="0.6" stroke-dasharray="4 4"/>
+      <circle r="5" fill="#ff4d57"/>
+      <path d="M-9 0H9M0 -9V9M-6.5 -6.5L6.5 6.5M-6.5 6.5L6.5 -6.5" stroke="#ff4d57" stroke-width="1.6"/>
+    </g>
+    <!-- casualties (START colours) -->
+    <g font-family="IBM Plex Mono, Consolas, monospace" font-size="11" fill="#ece6dd" fill-opacity="0.85">
+      <g transform="translate(760 205)"><circle r="7" fill="#ff4d57"/><path d="M-4 0H4M0 -4V4" stroke="#fff" stroke-width="2"/><text x="12" y="4">IMM</text></g>
+      <g transform="translate(870 360)"><circle r="7" fill="#ff7a33"/><path d="M-4 0H4M0 -4V4" stroke="#fff" stroke-width="2"/><text x="12" y="4">DEL</text></g>
+      <g transform="translate(1210 255)"><circle r="7" fill="#8be39a"/><path d="M-4 0H4M0 -4V4" stroke="#06121c" stroke-width="2"/><text x="-40" y="4">MIN</text></g>
+    </g>
+
+    <!-- VTOL airframe, top view (from the team CAD): long wing, slim fuselage, T-tail, 2 wing props + pusher -->
+    <g transform="translate(985 250) rotate(-18)">
+      <ellipse cx="0" cy="6" rx="150" ry="16" fill="#000" fill-opacity="0.25"/>
+      <path d="M-150 -6 Q-158 -2 -150 8 L150 8 Q158 -2 150 -6 L18 -14 L-18 -14 Z" fill="url(#hull)" stroke="#fbf6ee" stroke-opacity="0.5"/>
+      <path d="M-11 -52 Q0 -64 11 -52 L9 70 Q0 78 -9 70 Z" fill="url(#hull)" stroke="#fbf6ee" stroke-opacity="0.5"/>
+      <path d="M-38 62 L38 62 L36 72 L-36 72 Z" fill="url(#hull)" stroke="#fbf6ee" stroke-opacity="0.5"/>
+      <g stroke="#06121c" stroke-width="3" stroke-linecap="round">
+        <line x1="-74" y1="-2" x2="-74" y2="-2"><animateTransform attributeName="transform" type="rotate" from="0 -74 -2" to="360 -74 -2" dur="0.35s" repeatCount="indefinite"/></line>
+      </g>
+      <g fill="none" stroke="#fbf6ee" stroke-opacity="0.55" stroke-width="1.2">
+        <circle cx="-74" cy="-2" r="17"/><circle cx="74" cy="-2" r="17"/><circle cx="0" cy="80" r="13"/>
+      </g>
+      <g stroke="#06121c" stroke-width="3" stroke-linecap="round">
+        <line x1="-90" y1="-2" x2="-58" y2="-2"><animateTransform attributeName="transform" type="rotate" from="0 -74 -2" to="360 -74 -2" dur="0.3s" repeatCount="indefinite"/></line>
+        <line x1="58" y1="-2" x2="90" y2="-2"><animateTransform attributeName="transform" type="rotate" from="0 74 -2" to="-360 74 -2" dur="0.3s" repeatCount="indefinite"/></line>
+        <line x1="-12" y1="80" x2="12" y2="80"><animateTransform attributeName="transform" type="rotate" from="0 0 80" to="360 0 80" dur="0.25s" repeatCount="indefinite"/></line>
+      </g>
+      <circle cx="0" cy="-40" r="3.5" fill="#5fe0d2"><animate attributeName="fill-opacity" values="1;0.2;1" dur="1.4s" repeatCount="indefinite"/></circle>
+      <circle cx="-148" cy="1" r="2.5" fill="#ff4d57"/><circle cx="148" cy="1" r="2.5" fill="#8be39a"/>
+    </g>
+
+    <!-- left: identity -->
+    <g font-family="Segoe UI, Helvetica Neue, Arial, sans-serif">
+      <rect x="64" y="58" width="246" height="28" rx="14" fill="#ff7a33" fill-opacity="0.14" stroke="#ff7a33" stroke-opacity="0.55"/>
+      <text x="187" y="77" text-anchor="middle" font-size="13" font-weight="600" letter-spacing="2.2" fill="#ff9a5e">DRONATHON 3.0 · IEEE ENSIT</text>
+      <text x="60" y="178" font-size="104" font-weight="800" letter-spacing="3" fill="url(#title)">SKYFORGE</text>
+      <text x="64" y="220" font-size="24" fill="#ece6dd" fill-opacity="0.92">Autonomous coastal rescue drone</text>
+      <text x="64" y="250" font-size="16" fill="#b3c2bf">LangGraph orchestrator · PerceptionAgent · PlannerAgent · ROS 2 Jazzy</text>
+    </g>
+    <!-- stat chips -->
+    <g font-family="IBM Plex Mono, Consolas, monospace" font-size="13">
+      <g transform="translate(64 296)">
+        <rect width="146" height="58" rx="10" fill="#fbf6ee" fill-opacity="0.05" stroke="#5fe0d2" stroke-opacity="0.35"/>
+        <text x="14" y="25" font-size="20" font-weight="600" fill="#5fe0d2">&lt; 50 ms</text><text x="14" y="45" fill="#b3c2bf">reflex layer</text>
+      </g>
+      <g transform="translate(222 296)">
+        <rect width="146" height="58" rx="10" fill="#fbf6ee" fill-opacity="0.05" stroke="#5fe0d2" stroke-opacity="0.35"/>
+        <text x="14" y="25" font-size="20" font-weight="600" fill="#5fe0d2">≤ 100 ms</text><text x="14" y="45" fill="#b3c2bf">decision</text>
+      </g>
+      <g transform="translate(380 296)">
+        <rect width="146" height="58" rx="10" fill="#fbf6ee" fill-opacity="0.05" stroke="#ff7a33" stroke-opacity="0.45"/>
+        <text x="14" y="25" font-size="20" font-weight="600" fill="#ff9a5e">0 · 0 · 0</text><text x="14" y="45" font-size="12" fill="#b3c2bf">crash · zone · miss</text>
+      </g>
+      <g transform="translate(538 296)">
+        <rect width="146" height="58" rx="10" fill="#fbf6ee" fill-opacity="0.05" stroke="#5fe0d2" stroke-opacity="0.35"/>
+        <text x="14" y="25" font-size="20" font-weight="600" fill="#5fe0d2">&lt; 1 KB</text><text x="14" y="45" fill="#b3c2bf">signed JSON</text>
+      </g>
+    </g>
+    <text x="1250" y="402" text-anchor="end" font-family="IBM Plex Mono, Consolas, monospace" font-size="11" fill="#b3c2bf" fill-opacity="0.7">ENSIT · TUNIS · 07–08 NOV 2026</text>
+    <rect x="0.75" y="0.75" width="1278.5" height="418.5" rx="21.5" fill="none" stroke="#5fe0d2" stroke-opacity="0.25" stroke-width="1.5"/>
+  </g>
+</svg>
