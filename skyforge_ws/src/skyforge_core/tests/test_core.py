@@ -350,6 +350,8 @@ def test_short_sim_smoke(tmp_path, P):
     assert m["triage"]["off_target"] == 0 and m["triage"]["served_on_target"] >= 3
     assert all(p == "LANDED" for p in m["final_phase"])
     assert m["comms"]["max_bytes"] < 1024
+    if m["rth"]:  # never land inside the energy reserve (spec penalty: impossible return)
+        assert m["rth"]["battery_at_landing_pct"] >= m["rth"]["reserve_pct"]
 
 
 # ------------------------------------------------- energy model v2 / agent

@@ -98,21 +98,27 @@ curl -X POST localhost:8080/replay                                      # reject
 
 ## Results (headless 2D simulator, default coastal scenario)
 
-10 seeded runs. The scenario has 5 casualties (2 IMMEDIATE, one of them drifting at sea), 2 mines (one floating),
-a weapon, a hostile unit, 3 obstacles, a moving boat and a radio shadow zone. The faults are a 20 s jam, a 40 m
-GNSS spoof ramp, a station zone_add, a forged and a replayed command, a goto and a gust. The drone carries 4 kits.
+10 seeded runs. The scenario includes:
+
+- **Casualties:** 5 living (2 IMMEDIATE, one drifting at sea) and 1 likely-deceased body.
+- **Mines:** 5 (beach, floating, shallow 3 m, deep 12 m, buried in the beach), plus a weapon and a hostile unit.
+- **Environment:** 3 obstacles, a moving boat, a radio shadow zone, waves (±0.6 m) and a tide change at t = 200 s.
+- **Faults:** a 20 s jam, a 40 m GNSS spoof ramp, a station zone_add, a forged and a replayed command, a goto and a gust.
+- **Payload and energy:** 6 kits; the real airframe draws 15% more power than the paper budget.
 
 | KPI | Result |
 |---|---|
 | Collisions / danger-zone entries / off-target drops | **0 / 0 / 0** (all 10 runs) |
-| Casualties served | 4/5 in every run (the maximum with 4 kits; the EXPECTANT one waits) |
-| Landed safely | 10/10 |
-| Decision latency p95 | 4–11 ms on the dev laptop depending on load (budget 100 ms); reflex p95 < 0.3 ms (budget 50 ms) |
-| Drop error vs truth | 0.1 – 1.0 m (spec 1.5 m) |
+| Living casualties served | **4.8 / 5** on average (7 runs perfect); the likely-deceased body is assessed and never takes a kit |
+| Landed safely / battery at landing | 10/10, lowest **20.4%** (reserve 15%) |
+| RTH energy, predicted vs actual | within **−2.8% … +7.8%** (path-aware, online-calibrated power model) |
+| Drop error vs truth | max **0.96 m**, mean 0.30 m (spec 1.5 m) |
+| Mines | localised within 8 m: 4.3 / 5; inside a registered zone: 4.6 / 5. Deep and shallow mines found by sonar, surface mines by the camera, the buried one by the magnetometer (least reliable) |
+| Decision latency p95 | ≤ 6.4 ms (budget 100 ms); reflex p95 < 0.3 ms (budget 50 ms) |
 | GNSS spoof detection | 1.9 s (40 m ramp at 5 m/s) |
-| Forged / replayed commands | 100 % rejected |
-| Resync after a 20 s outage | 0.02 s, 0 messages lost; max message 978 B (< 1 KB) |
-| MAYDAY at t = 150 s | drone 1 lands safely; drone 2 resumes from the station's snapshot, skips the served casualty, total 4/5, 0 safety events |
+| Forged / replayed commands | 100% rejected |
+| Link outage | buffered messages replayed in order on reconnect, 0 lost; largest message 978 B (< 1 KB) |
+| MAYDAY at t = 150 s | drone 1 lands safely; drone 2 resumes from the station's snapshot, skips served casualties; 0 safety events |
 
 These are simulator numbers. Re-measure in Gazebo/PX4 with the real detectors before the presentation.
 
