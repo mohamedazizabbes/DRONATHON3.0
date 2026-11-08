@@ -1,0 +1,25 @@
+names: [mine, weapon, debris]
+split: {train: 0.7, val: 0.2, test: 0.1}
+sources:
+  - name: mines
+    path: data/mines
+    class_map: {0: 0}
+    train_repeat: 2
+    keep_background: 0.0
+  - name: guns
+    path: data/guns/extracted
+    class_map: {16: 1}
+    train_repeat: 2
+    group_regex: '^(.*) \((\d+)\)$'
+    chunk: 25
+    keep_background: 0.5
+  - name: litter
+    path: data/litter/extracted
+    class_map: {0: 2, 1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2}
+    group_regex: '^(frame)_(\d+)_patch'
+    chunk: 100
+    keep_background: 0.2
+  - name: weapons2
+    path: data/weapons2
+    class_map: {1: 1, 6: 1, 7: 1, 8: 1}
+    keep_background: 0.3
