@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://www.youtube.com/watch?v=5pZ2y8-tONc"><img src="https://img.shields.io/badge/▶_Demo_video-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="Demo video"></a>
   <a href="docs/TECHNICAL_DOCUMENTATION.md"><img src="https://img.shields.io/badge/📘_Technical_documentation-0b3a46?style=for-the-badge" alt="Technical documentation"></a>
-  <a href="https://raw.githack.com/mohamedazizabbes/DRONATHON3.0/main/docs/slides/deck.html"><img src="https://img.shields.io/badge/🎞_Slides_(live)-ff7a33?style=for-the-badge" alt="Slides"></a>
+  <a href="docs/slides/deck.html"><img src="https://img.shields.io/badge/🎞_Slides-ff7a33?style=for-the-badge" alt="Slides"></a>
   <a href="docs/SKYFORGE_System_Design.pdf"><img src="https://img.shields.io/badge/📐_System_design-06202c?style=for-the-badge" alt="System design PDF"></a>
   <a href="docs/INTERFACES.md"><img src="https://img.shields.io/badge/🔌_Interfaces-5fe0d2?style=for-the-badge&logoColor=black" alt="Interfaces"></a>
   <a href="deploy/raspberry_pi/README.md"><img src="https://img.shields.io/badge/🍓_Raspberry_Pi_(F12)-a22846?style=for-the-badge" alt="Raspberry Pi"></a>
@@ -20,7 +20,8 @@
   <img src="https://img.shields.io/badge/tests-43_passing-2ea44f" alt="43 tests passing">
 </p>
 
-<p align="center"><i>The deck also lives at <a href="docs/slides/deck.html"><code>docs/slides/deck.html</code></a>: download and open it in a browser.</i></p>
+<p align="center"><i>Slides: open <a href="docs/slides/deck.html"><code>docs/slides/deck.html</code></a> → <b>Download raw file</b> → open it in a browser.
+Once the repository is public, the deck also renders live at <a href="https://raw.githack.com/mohamedazizabbes/DRONATHON3.0/main/docs/slides/deck.html">raw.githack.com/…/deck.html</a>.</i></p>
 
 ---
 
