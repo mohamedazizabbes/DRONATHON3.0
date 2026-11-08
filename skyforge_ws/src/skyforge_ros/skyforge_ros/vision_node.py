@@ -40,8 +40,8 @@ POSTURE_CLASSES = {
 
 
 def image_to_numpy(m: Image) -> np.ndarray:
-    ch = {"rgb8": 3, "bgr8": 3, "rgba8": 4, "bgra8": 4, "mono8": 1, "32FC1": 1, "16UC1": 1}.get(m.encoding, 3)
-    dtype = np.float32 if m.encoding == "32FC1" else np.uint16 if m.encoding == "16UC1" else np.uint8
+    ch = {"rgb8": 3, "bgr8": 3, "rgba8": 4, "bgra8": 4, "mono8": 1, "32FC1": 1, "16UC1": 1, "mono16": 1}.get(m.encoding, 3)
+    dtype = np.float32 if m.encoding == "32FC1" else np.uint16 if m.encoding in ("16UC1", "mono16") else np.uint8
     a = np.frombuffer(m.data, dtype=dtype).reshape(m.height, -1)[:, : m.width * ch].reshape(m.height, m.width, ch)
     if m.encoding in ("rgb8", "rgba8"):
         a = a[:, :, 2::-1] if ch >= 3 else a  # -> BGR for ultralytics/opencv
