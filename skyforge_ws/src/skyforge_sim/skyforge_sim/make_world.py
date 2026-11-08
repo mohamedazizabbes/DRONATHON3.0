@@ -121,27 +121,72 @@ def terrain(xmin, xmax, ymin, ymax, shore, tile=24.0):
     return f'  <model name="terrain"><static>true</static><link name="l">{coll}{"".join(vis)}</link></model>'
 
 
+HM_SIZE, HM_Z, HM_OFF = 1200.0, 201.66, (110.0, 760.0, -5.0)
+
+
+class Terrain:
+    def __init__(self, cx, cy):
+        import numpy as np
+        f = Path(__file__).resolve().parent.parent / "models" / "harmonic_terrain" / "materials" / "textures" / "Heightmap.png"
+        if not f.exists():
+            f = Path(__file__).resolve().parents[4] / "share" / "skyforge_sim" / "models" / "harmonic_terrain" / "materials" / "textures" / "Heightmap.png"
+        try:
+            from PIL import Image
+            raw = np.asarray(Image.open(f))
+        except ImportError:
+            import cv2
+            raw = cv2.imread(str(f), cv2.IMREAD_UNCHANGED)
+        self.h = raw.astype("float32") / 65535.0 * HM_Z + HM_OFF[2]
+        self.n = self.h.shape[0] - 1
+        self.cx, self.cy = cx, cy
+
+    def height(self, x, y):
+        c = (-(x - HM_OFF[0]) / HM_SIZE + 0.5) * self.n
+        r = (0.5 + (y - HM_OFF[1]) / HM_SIZE) * self.n
+        if not (0 <= c <= self.n and 0 <= r <= self.n):
+            return None
+        return float(self.h[int(round(r)), int(round(c))])
+
+
 def horizon(xmin, xmax, ymin, ymax, shore):
     cx = (xmin + xmax) / 2
     far = (f'  <model name="open_sea"><static>true</static><pose>{cx:.1f} {shore - 1000:.1f} -0.05 0 0 0</pose><link name="l">'
            f'<visual name="v"><geometry><box><size>3000 2000 0.02</size></box></geometry><cast_shadows>false</cast_shadows>'
            f'<material><ambient>0.03 0.2 0.33 1</ambient><diffuse>0.03 0.22 0.36 1</diffuse><specular>0.5 0.5 0.5 1</specular></material></visual></link></model>\n')
+    hy0 = TERRAIN_Y
+    hills = INCLUDE.format(m="harmonic_terrain", n="hills", x=0.0, y=0.0, z=0.0, r=0, yaw=0.0, plugins="")
     land = (f'  <model name="hinterland"><static>true</static><pose>{cx:.1f} {ymax + 700:.1f} -0.05 0 0 0</pose><link name="l">'
             f'<visual name="v"><geometry><box><size>3000 1400 0.02</size></box></geometry><cast_shadows>false</cast_shadows>'
             f'<material><ambient>0.6 0.55 0.4 1</ambient><diffuse>0.62 0.57 0.42 1</diffuse></material></visual></link></model>\n')
     isles = "".join(INCLUDE.format(m="rock1" if i % 2 else "rock3", n=f"island_{i}", x=x, y=y, z=-2.0, r=0, yaw=i * 1.1, plugins="")
                     for i, (x, y) in enumerate([(-300, -500), (100, -700), (450, -550), (700, -800), (-600, -900)]))
-    return far + land + isles
+    lake = []
+    for i in range(4):
+        for j in range(4):
+            lx, ly = HM_OFF[0] - 450 + i * 300, HM_OFF[1] - 450 + j * 300
+            lake.append(f'<visual name="w{i}{j}"><pose>{lx:.1f} {ly:.1f} 0 0 0 0</pose><geometry><box><size>300 300 0.02</size></box></geometry>'
+                        f'<cast_shadows>false</cast_shadows>{pbr("water_deep", 0.25)}</visual>')
+    lakes = f'  <model name="lagoon"><static>true</static><link name="l">{"".join(lake)}</link></model>\n'
+    return far + hills + lakes + isles
+
+
+TERRAIN_Y = 140.0
 
 
 def nature(area, shore, rng):
     out = []
     k = 0
+    ter = Terrain(0.0, 0.0)
+
     def inside(x, y, m=8.0):
         return area["xmin"] - m < x < area["xmax"] + m and area["ymin"] - m < y < area["ymax"] + m
-    while k < 220:
-        x, y = rng.uniform(area["xmin"] - 120, area["xmax"] + 120), rng.uniform(shore + 6, area["ymax"] + 110)
+
+    while k < 120:
+        x, y = rng.uniform(area["xmin"] - 120, area["xmax"] + 120), rng.uniform(shore + 6, area["ymax"] + 60)
         if inside(x, y):
+            continue
+        hgt = ter.height(x, y)
+        if hgt is not None and hgt > 0.3:
             continue
         k += 1
         m = "pine_tree" if rng.random() < 0.6 else "oak_tree"
@@ -156,7 +201,7 @@ def build(scenario, params):
     area = params["mission"]["area"]
     shore = max(p[1] for poly in params["water"]["polygons"] for p in poly)
     xmin, xmax = area["xmin"] - 220, area["xmax"] + 220
-    ymin, ymax = area["ymin"] - 200, area["ymax"] + 160
+    ymin, ymax = area["ymin"] - 200, area["ymax"] + 70
     hx, hy = params["mission"]["home"]
     import random
     out = [HEAD.format(ambient=params["perception"]["ambient_k"], terrain=terrain(xmin, xmax, ymin, ymax, shore), hx=hx, hy=hy)]
