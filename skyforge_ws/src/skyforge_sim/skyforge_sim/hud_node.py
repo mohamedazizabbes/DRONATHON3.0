@@ -111,6 +111,8 @@ class Hud(Node):
         self.yaw = math.degrees(math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)))
 
     def text(self, img, s, xy, col=WHITE, scale=0.6, th=1):
+        scale *= 1.3
+        th = max(th, 1 if scale < 0.75 else 2)
         cv2.putText(img, s, xy, cv2.FONT_HERSHEY_DUPLEX, scale, (0, 0, 0), th + 2, cv2.LINE_AA)
         cv2.putText(img, s, xy, cv2.FONT_HERSHEY_DUPLEX, scale, col, th, cv2.LINE_AA)
 
@@ -215,9 +217,9 @@ class Hud(Node):
         line = "FOUND  " + "   ".join(f"{n} {founds.get(k, 0)}/{totals[k]}" for k, n in names if k in totals)
         cv2.rectangle(img, (0, h - 30), (w, h), (25, 25, 25), -1)
         self.text(img, line, (fx, fy), WHITE, 0.45)
-        lx, ly = w - 170, 20
-        cv2.rectangle(img, (lx - 8, ly - 14), (w - 6, ly + 196), (25, 25, 25), -1)
-        cv2.rectangle(img, (lx - 8, ly - 14), (w - 6, ly + 196), (80, 80, 80), 1)
+        lx, ly, step = w - 225, 26, 24
+        cv2.rectangle(img, (lx - 10, ly - 18), (w - 6, ly + 11 * step - 4), (22, 22, 22), -1)
+        cv2.rectangle(img, (lx - 10, ly - 18), (w - 6, ly + 11 * step - 4), (90, 90, 90), 1)
         entries = [
             ("circle", RED, "casualty IMM"), ("circle", ORANGE, "casualty DEL"), ("circle", GREEN, "casualty MIN"),
             ("circle", GREY, "casualty EXP"), ("diamond", YELLOW, "mine"), ("square", RED, "hostile unit"),
@@ -225,32 +227,35 @@ class Hud(Node):
             ("ghost", (110, 110, 110), "not found yet"), ("drone", CYAN, "drone"),
         ]
         for i, (shape, col, label) in enumerate(entries):
-            y = ly + i * 17
-            c = (lx + 6, y)
+            y = ly + i * step
+            c = (lx + 8, y)
             if shape == "circle":
-                cv2.circle(img, c, 5, col, -1)
+                cv2.circle(img, c, 7, col, -1)
             elif shape == "diamond":
-                cv2.fillPoly(img, [np.array([(c[0], c[1] - 6), (c[0] + 6, c[1]), (c[0], c[1] + 6), (c[0] - 6, c[1])], np.int32)], col)
+                cv2.fillPoly(img, [np.array([(c[0], c[1] - 8), (c[0] + 8, c[1]), (c[0], c[1] + 8), (c[0] - 8, c[1])], np.int32)], col)
             elif shape == "square":
-                cv2.rectangle(img, (c[0] - 5, c[1] - 5), (c[0] + 5, c[1] + 5), col, -1)
+                cv2.rectangle(img, (c[0] - 7, c[1] - 7), (c[0] + 7, c[1] + 7), col, -1)
             elif shape == "cross":
-                cv2.drawMarker(img, c, col, cv2.MARKER_TILTED_CROSS, 10, 2)
+                cv2.drawMarker(img, c, col, cv2.MARKER_TILTED_CROSS, 14, 2)
             elif shape == "dot":
-                cv2.circle(img, c, 3, col, -1)
+                cv2.circle(img, c, 4, col, -1)
             elif shape == "zone":
-                cv2.circle(img, c, 6, col, 1)
+                cv2.circle(img, c, 8, col, 2)
             elif shape == "ghost":
-                cv2.circle(img, c, 5, col, 1)
+                cv2.circle(img, c, 7, col, 1)
             else:
-                cv2.fillPoly(img, [np.array([(c[0] + 7, c[1]), (c[0] - 5, c[1] - 5), (c[0] - 5, c[1] + 5)], np.int32)], col)
-            self.text(img, label, (lx + 18, y + 4), WHITE, 0.4)
-        sb = 50.0
-        x_a, y_a = 14, h - 44
+                cv2.fillPoly(img, [np.array([(c[0] + 9, c[1]), (c[0] - 6, c[1] - 7), (c[0] - 6, c[1] + 7)], np.int32)], col)
+            self.text(img, label, (lx + 24, y + 6), WHITE, 0.45)
+        sb = 100.0
+        x_a, y_a = 16, h - 52
         x_b = x_a + int(sb * sc)
-        cv2.line(img, (x_a, y_a), (x_b, y_a), WHITE, 2)
-        cv2.line(img, (x_a, y_a - 5), (x_a, y_a + 5), WHITE, 2)
-        cv2.line(img, (x_b, y_a - 5), (x_b, y_a + 5), WHITE, 2)
-        self.text(img, f"{int(sb)} m", (x_a + (x_b - x_a) // 2 - 14, y_a - 8), WHITE, 0.45)
+        half = (x_a + x_b) // 2
+        cv2.rectangle(img, (x_a, y_a - 4), (half, y_a + 4), WHITE, -1)
+        cv2.rectangle(img, (half, y_a - 4), (x_b, y_a + 4), (40, 40, 40), -1)
+        cv2.rectangle(img, (x_a, y_a - 4), (x_b, y_a + 4), WHITE, 1)
+        self.text(img, "0", (x_a - 4, y_a - 10), WHITE, 0.4)
+        self.text(img, "50", (half - 10, y_a - 10), WHITE, 0.4)
+        self.text(img, "100 m", (x_b - 22, y_a - 10), WHITE, 0.4)
         self.text(img, "N", (14, 40), WHITE, 0.55)
         cv2.arrowedLine(img, (19, 70), (19, 48), WHITE, 2, tipLength=0.4)
         d = P(*self.pos)
@@ -329,12 +334,19 @@ class Hud(Node):
         st = self.state
         phase = st.phase if st else "INIT"
         mt = int(time.time() - self.t0)
-        self.text(canvas, f"MISSION {mt // 60:02d}:{mt % 60:02d}", (14, 36), YELLOW, 0.75, 2)
-        self.text(canvas, f"{phase.replace('_', ' ')}", (250, 36), PHASE_COLOR.get(phase, WHITE), 0.8, 2)
+        cv2.rectangle(canvas, (0, 0), (W, 50), (28, 22, 16), -1)
+        cv2.line(canvas, (0, 50), (W, 50), (0, 160, 255), 2)
+        self.text(canvas, "SKYFORGE", (12, 36), (0, 170, 255), 0.75, 2)
+        self.text(canvas, f"T+{mt // 60:02d}:{mt % 60:02d}", (200, 36), YELLOW, 0.65, 2)
+        pc = PHASE_COLOR.get(phase, WHITE)
+        label = phase.replace("_", " ")
+        (pw_, ph_), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_DUPLEX, 0.85, 2)
+        cv2.rectangle(canvas, (340, 9), (340 + pw_ + 24, 43), pc, -1)
+        cv2.putText(canvas, label, (352, 35), cv2.FONT_HERSHEY_DUPLEX, 0.85, (15, 15, 15), 2, cv2.LINE_AA)
         tgt = st.target_id if st and st.target_id else ""
-        self.text(canvas, f"TARGET {tgt if tgt else ('LOCKED' if locked else 'SEARCHING')}", (520, 36), GREEN if (tgt or locked) else ORANGE, 0.75, 2)
+        self.text(canvas, f"TARGET {tgt if tgt else ('LOCKED' if locked else 'SEARCHING')}", (600, 36), GREEN if (tgt or locked) else ORANGE, 0.6, 2)
         nconf = sum(1 for t in self.tracks if t.confirmed)
-        self.text(canvas, f"TRACKS {nconf}/{len(self.tracks)}   ZONES {len(self.zones)}", (900, 36), WHITE, 0.6, 1)
+        self.text(canvas, f"TRACKS {nconf}/{len(self.tracks)}  ZONES {len(self.zones)}", (960, 36), WHITE, 0.5, 1)
         yb = 56 + vh + 26
         items = [("ALT", f"{self.alt:4.1f} m"), ("SPD", f"{self.speed:3.1f} m/s"), ("HDG", f"{self.yaw % 360:3.0f}"),
                  ("COV", f"{100 * st.coverage:3.0f} %" if st else "--"), ("KITS", f"{st.kits}" if st else "--"),
