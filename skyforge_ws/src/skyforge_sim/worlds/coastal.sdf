@@ -269,7 +269,7 @@
   <include><uri>model://rock3</uri><name>island_2</name><static>true</static><pose>450.00 -550.00 -2.00 0.0000 0 2.2000</pose></include>
   <include><uri>model://rock1</uri><name>island_3</name><static>true</static><pose>700.00 -800.00 -2.00 0.0000 0 3.3000</pose></include>
   <include><uri>model://rock3</uri><name>island_4</name><static>true</static><pose>-600.00 -900.00 -2.00 0.0000 0 4.4000</pose></include>
-  <include><uri>model://patrol_boat</uri><name>boat</name><static>true</static><pose>20.00 -55.00 0.00 0.0000 0 0.0000</pose></include>
+  <include><uri>model://civil_boat</uri><name>boat</name><static>true</static><pose>20.00 -55.00 0.00 0.0000 0 0.0000</pose></include>
   <include><uri>model://skyforge_drone</uri><name>skyforge</name><static>false</static><pose>0.00 0.00 0.12 0.0000 0 0.0000</pose></include>
 </world>
 </sdf>

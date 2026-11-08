@@ -8,7 +8,7 @@
         <geometry>
           <mesh>
             <uri>meshes/rcboat.dae</uri>
-            <scale>8.0 8.0 8.0</scale>
+            <scale>14.0 14.0 14.0</scale>
           </mesh>
         </geometry>
       </collision>

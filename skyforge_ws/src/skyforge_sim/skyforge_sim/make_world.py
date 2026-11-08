@@ -197,7 +197,7 @@ def build(scenario, params):
     out.append(horizon(xmin, xmax, ymin, ymax, shore))
     for m in scenario.get("moving_obstacles", []):
         x, y = m["loop"][0]
-        out.append(INCLUDE.format(m="patrol_boat", n=m["id"], x=x, y=y, z=0.0, r=0, yaw=0, plugins=""))
+        out.append(INCLUDE.format(m="civil_boat", n=m["id"], x=x, y=y, z=0.0, r=0, yaw=0, plugins=""))
     out.append(INCLUDE.format(m="skyforge_drone", n="skyforge", x=hx, y=hy, z=0.12, r=0, yaw=0, plugins="").replace("<static>true</static>", "<static>false</static>"))
     out.append("</world>\n</sdf>\n")
     return "".join(out)

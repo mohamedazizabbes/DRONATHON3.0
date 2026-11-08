@@ -36,6 +36,9 @@ class Hud(Node):
     def __init__(self):
         super().__init__("hud")
         self.declare_parameter("window", True)
+        self.declare_parameter("display_width", 960)
+        self.disp_w = int(self.get_parameter("display_width").value)
+        self.win_ready = False
         self.declare_parameter("width", 1280)
         self.declare_parameter("height", 720)
         self.W = int(self.get_parameter("width").value)
@@ -89,6 +92,24 @@ class Hud(Node):
     def text(self, img, s, xy, col=WHITE, scale=0.6, th=1):
         cv2.putText(img, s, xy, cv2.FONT_HERSHEY_DUPLEX, scale, (0, 0, 0), th + 2, cv2.LINE_AA)
         cv2.putText(img, s, xy, cv2.FONT_HERSHEY_DUPLEX, scale, col, th, cv2.LINE_AA)
+
+    def target_box(self, img, p1, p2, col, label, conf):
+        x1, y1 = p1
+        x2, y2 = p2
+        w, h = max(x2 - x1, 6), max(y2 - y1, 6)
+        pad = 4
+        x1, y1, x2, y2 = x1 - pad, y1 - pad, x1 + w + pad, y1 + h + pad
+        L = max(6, min(w, h) // 3 + 4)
+        for (ax, ay), (dx, dy) in (((x1, y1), (1, 1)), ((x2, y1), (-1, 1)), ((x1, y2), (1, -1)), ((x2, y2), (-1, -1))):
+            cv2.line(img, (ax, ay), (ax + dx * L, ay), col, 2, cv2.LINE_AA)
+            cv2.line(img, (ax, ay), (ax, ay + dy * L), col, 2, cv2.LINE_AA)
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_DUPLEX, 0.45, 1)
+        ty = y1 - 8 if y1 - th - 10 > 0 else y2 + th + 10
+        cv2.rectangle(img, (x1, ty - th - 5), (x1 + tw + 8, ty + 4), col, -1)
+        cv2.putText(img, label, (x1 + 4, ty), cv2.FONT_HERSHEY_DUPLEX, 0.45, (10, 10, 10), 1, cv2.LINE_AA)
+        bw = tw + 8
+        cv2.rectangle(img, (x1, ty + 5), (x1 + bw, ty + 8), (40, 40, 40), -1)
+        cv2.rectangle(img, (x1, ty + 5), (x1 + int(bw * max(0.0, min(1.0, conf))), ty + 8), col, -1)
 
     def map_view(self, w, h):
         img = np.zeros((h, w, 3), np.uint8)
@@ -156,7 +177,9 @@ class Hud(Node):
             view = np.zeros((vh, vw, 3), np.uint8)
             self.text(view, "NO VIDEO", (vw // 2 - 80, vh // 2), RED, 1.0, 2)
         locked = None
-        for src, col in (("jury", RED), ("team", CYAN)):
+        cls_col = {"mine": YELLOW, "weapon": (220, 80, 220), "debris": (60, 140, 200), "hostile_unit": RED}
+        post_col = {"lying": RED, "sitting": ORANGE, "standing": GREEN, "waving": GREEN}
+        for src in ("jury", "team"):
             dets, (iw, ih), ts = self.dets[src]
             if time.time() - ts > 1.0:
                 continue
@@ -164,10 +187,15 @@ class Hud(Node):
             for d in dets:
                 x1, y1, x2, y2 = d["bbox"]
                 p1, p2 = (int(x1 * sx), int(y1 * sy)), (int(x2 * sx), int(y2 * sy))
-                cv2.rectangle(view, p1, p2, col, 2)
-                post = d.get("attrs", {}).get("posture")
-                label = f'{d["class"]}{"/" + post if post else ""} {d["confidence"]:.2f}'
-                self.text(view, label, (p1[0], max(16, p1[1] - 6)), col, 0.5)
+                attrs = d.get("attrs", {})
+                post = attrs.get("posture")
+                if d["class"] == "injured":
+                    col = CYAN if attrs.get("in_water") else post_col.get(post, CYAN)
+                    name = "PERSON IN WATER" if attrs.get("in_water") else f"INJURED {post.upper()}" if post else "INJURED"
+                else:
+                    col = cls_col.get(d["class"], WHITE)
+                    name = d["class"].replace("_", " ").upper()
+                self.target_box(view, p1, p2, col, f"{name} {int(100 * d['confidence'])}%", d["confidence"])
                 if d["class"] == "injured" and (locked is None or d["confidence"] > locked[2]):
                     locked = ((p1[0] + p2[0]) // 2, (p1[1] + p2[1]) // 2, d["confidence"])
         cx, cy = vw // 2, vh // 2
@@ -175,7 +203,11 @@ class Hud(Node):
             cv2.line(view, (cx + a1, cy + b1), (cx + a2, cy + b2), GREEN, 1)
         if locked:
             x, y, _ = locked
-            cv2.rectangle(view, (x - 28, y - 28), (x + 28, y + 28), YELLOW, 2)
+            cv2.circle(view, (x, y), 30, YELLOW, 1, cv2.LINE_AA)
+            cv2.line(view, (x - 40, y), (x - 32, y), YELLOW, 2)
+            cv2.line(view, (x + 32, y), (x + 40, y), YELLOW, 2)
+            cv2.line(view, (x, y - 40), (x, y - 32), YELLOW, 2)
+            cv2.line(view, (x, y + 32), (x, y + 40), YELLOW, 2)
         self.text(view, "CAM  RGB  640x480  tilt 20", (10, vh - 12), GREY, 0.45)
         canvas[56:56 + vh, 10:10 + vw] = view
         cv2.rectangle(canvas, (10, 56), (10 + vw - 1, 56 + vh - 1), (70, 70, 70), 1)
@@ -222,6 +254,10 @@ class Hud(Node):
         self.pub.publish(out)
         if self.window:
             try:
+                if not self.win_ready:
+                    cv2.namedWindow("SKYFORGE OPERATOR", cv2.WINDOW_NORMAL)
+                    cv2.resizeWindow("SKYFORGE OPERATOR", self.disp_w, int(self.disp_w * H / W))
+                    self.win_ready = True
                 cv2.imshow("SKYFORGE OPERATOR", canvas)
                 cv2.waitKey(1)
             except cv2.error:
