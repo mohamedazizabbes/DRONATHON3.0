@@ -18,6 +18,9 @@ class Mover(Node):
         self.declare_parameter("world", "skyforge")
         self.declare_parameter("rate", 10.0)
         self.declare_parameter("drift", True)
+        self.declare_parameter("wave_amp", 0.1)
+        self.declare_parameter("wave_period", 4.0)
+        self.t = 0.0
         sc = DEFAULT_SCENARIO
         shore = max(p[1] for poly in DEFAULTS["water"]["polygons"] for p in poly)
         self.wind = list(sc.get("wind", [0.0, 0.0]))
@@ -30,7 +33,8 @@ class Mover(Node):
                 if o.get("floating", o["p"][1] < shore):
                     z = -0.15 if o["cls"] == "mine" else 0.05
                     rot = o["cls"] == "injured" and o.get("posture", "lying") == "lying"
-                    self.floaters.append({"id": o["id"], "p": list(o["p"]), "z": z, "roll": math.pi / 2 if rot else 0.0})
+                    self.floaters.append({"id": o["id"], "p": list(o["p"]), "z": z, "roll": math.pi / 2 if rot else 0.0,
+                                          "phase": (len(self.floaters) * 1.7) % (2 * math.pi), "yaw": (len(self.floaters) * 2.3) % (2 * math.pi)})
         self.static = [{"p": list(o["p"]), "r": float(o["r"]), "h": float(o["h"]), "v": [0.0, 0.0]} for o in sc.get("obstacles", [])]
         self.movers = [{**m, "p": list(m["loop"][0]), "seg": 0, "v": [0.0, 0.0]} for m in sc.get("moving_obstacles", [])]
         w = self.get_parameter("world").value
@@ -40,16 +44,20 @@ class Mover(Node):
         self.dt = 1.0 / float(self.get_parameter("rate").value)
         self.create_timer(self.dt, self.tick)
 
-    def set_pose(self, name, x, y, z, roll, yaw):
+    def set_pose(self, name, x, y, z, roll, yaw, pitch=0.0):
         if not self.cli.service_is_ready():
             return
         r = SetEntityPose.Request()
         r.entity.name = name
         r.entity.type = Entity.MODEL
         r.pose.position.x, r.pose.position.y, r.pose.position.z = float(x), float(y), float(z)
-        cr, sr, cy, sy = math.cos(roll / 2), math.sin(roll / 2), math.cos(yaw / 2), math.sin(yaw / 2)
-        r.pose.orientation.w, r.pose.orientation.x = cr * cy, sr * cy
-        r.pose.orientation.y, r.pose.orientation.z = sr * sy, cr * sy
+        cr, sr = math.cos(roll / 2), math.sin(roll / 2)
+        cp, sp = math.cos(pitch / 2), math.sin(pitch / 2)
+        cy, sy = math.cos(yaw / 2), math.sin(yaw / 2)
+        r.pose.orientation.w = cr * cp * cy + sr * sp * sy
+        r.pose.orientation.x = sr * cp * cy - cr * sp * sy
+        r.pose.orientation.y = cr * sp * cy + sr * cp * sy
+        r.pose.orientation.z = cr * cp * sy - sr * sp * cy
         self.cli.call_async(r)
 
     def tick(self):
@@ -69,10 +77,15 @@ class Mover(Node):
                 m["p"][0] += m["v"][0] * dt
                 m["p"][1] += m["v"][1] * dt
             self.set_pose(m["id"], m["p"][0], m["p"][1], 0.0, 0.0, math.atan2(m["v"][1], m["v"][0]) if d > step else 0.0)
+        self.t += dt
+        amp = float(self.get_parameter("wave_amp").value)
+        w = 2 * math.pi / float(self.get_parameter("wave_period").value)
         for f in self.floaters:
             f["p"][0] += self.drift_v[0] * dt
             f["p"][1] += self.drift_v[1] * dt
-            self.set_pose(f["id"], f["p"][0], f["p"][1], f["z"], f["roll"], 0.0)
+            ph = w * self.t + f["phase"]
+            self.set_pose(f["id"], f["p"][0], f["p"][1], f["z"] + amp * math.sin(ph), f["roll"] + 0.08 * math.sin(ph + 0.7),
+                          f["yaw"], 0.08 * math.cos(ph))
         obs = self.static + [{"p": [round(m["p"][0], 2), round(m["p"][1], 2)], "r": float(m["r"]), "h": float(m["h"]),
                               "v": [round(m["v"][0], 2), round(m["v"][1], 2)]} for m in self.movers]
         self.pub_obs.publish(String(data=json.dumps(obs, separators=(",", ":"))))

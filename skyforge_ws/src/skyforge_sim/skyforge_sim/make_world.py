@@ -15,17 +15,10 @@ HEAD = """<?xml version="1.0"?>
   <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors"><render_engine>ogre2</render_engine></plugin>
   <gravity>0 0 -9.81</gravity>
   <atmosphere type="adiabatic"><temperature>{ambient}</temperature></atmosphere>
-  <scene><ambient>0.55 0.55 0.55 1</ambient><background>0.62 0.76 0.9 1</background><shadows>false</shadows></scene>
-  <light type="directional" name="sun"><cast_shadows>false</cast_shadows><pose>0 0 100 0 0 0</pose>
+  <scene><ambient>0.5 0.5 0.52 1</ambient><background>0.62 0.76 0.9 1</background><shadows>true</shadows><sky></sky></scene>
+  <light type="directional" name="sun"><cast_shadows>true</cast_shadows><pose>0 0 100 0 0 0</pose>
     <diffuse>0.95 0.93 0.88 1</diffuse><specular>0.3 0.3 0.3 1</specular><direction>0.3 0.2 -1</direction></light>
-  <model name="sea"><static>true</static><pose>{sea_x} {sea_y} 0 0 0 0</pose><link name="l">
-    <collision name="c"><geometry><box><size>{sea_w} {sea_h} 0.02</size></box></geometry></collision>
-    <visual name="v"><geometry><box><size>{sea_w} {sea_h} 0.02</size></box></geometry>
-    <material><ambient>0.05 0.3 0.45 1</ambient><diffuse>0.05 0.3 0.45 1</diffuse><specular>0.5 0.5 0.5 1</specular></material></visual></link></model>
-  <model name="beach"><static>true</static><pose>{beach_x} {beach_y} 0 0 0 0</pose><link name="l">
-    <collision name="c"><geometry><box><size>{beach_w} {beach_h} 0.02</size></box></geometry></collision>
-    <visual name="v"><geometry><box><size>{beach_w} {beach_h} 0.02</size></box></geometry>
-    <material><ambient>0.78 0.7 0.52 1</ambient><diffuse>0.78 0.7 0.52 1</diffuse></material></visual></link></model>
+{terrain}
   <model name="home_pad"><static>true</static><pose>{hx} {hy} 0.015 0 0 0</pose><link name="l">
     <visual name="v"><geometry><cylinder><radius>1.5</radius><length>0.01</length></cylinder></geometry>
     <material><ambient>0.2 0.6 0.2 1</ambient><diffuse>0.2 0.6 0.2 1</diffuse></material></visual></link></model>\n"""
@@ -94,17 +87,65 @@ def obstacle(o):
     return PRIM.format(n=o["id"], x=o["p"][0], y=o["p"][1], z=0, yaw=0, visuals=coll + visuals, plugins="")
 
 
+def pbr(tex, rough):
+    return (f"<material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><specular>0.2 0.2 0.2 1</specular><pbr><metal>"
+            f"<albedo_map>model://terrain/materials/textures/{tex}_albedo.png</albedo_map>"
+            f"<normal_map>model://terrain/materials/textures/{tex}_normal.png</normal_map>"
+            f"<roughness>{rough}</roughness><metalness>0.0</metalness></metal></pbr></material>")
+
+
+def terrain(xmin, xmax, ymin, ymax, shore, tile=24.0):
+    vis = []
+    cols = int(math.ceil((xmax - xmin) / tile))
+    y = shore - tile
+    rows = []
+    while y > ymin - tile:
+        rows.append((y, "water_deep" if y < shore - 3 * tile else "water_shallow", 0.25))
+        y -= tile
+    y = shore
+    while y < ymax:
+        rows.append((y, "sand", 0.95))
+        y += tile
+    k = 0
+    for y0, tex, rough in rows:
+        for c in range(cols):
+            x0 = xmin + c * tile
+            k += 1
+            vis.append(f'<visual name="t{k}"><pose>{x0 + tile / 2:.1f} {y0 + tile / 2:.1f} 0 0 0 0</pose><geometry><box><size>{tile} {tile} 0.02</size></box></geometry><cast_shadows>false</cast_shadows>{pbr(tex, rough)}</visual>')
+    sea_h = shore - (ymin - tile)
+    beach_h = ymax - shore
+    coll = (f'<collision name="sea"><pose>{(xmin + xmax) / 2:.1f} {shore - sea_h / 2:.1f} 0 0 0 0</pose><geometry><box><size>{xmax - xmin + tile} {sea_h} 0.02</size></box></geometry></collision>'
+            f'<collision name="beach"><pose>{(xmin + xmax) / 2:.1f} {shore + beach_h / 2:.1f} 0 0 0 0</pose><geometry><box><size>{xmax - xmin + tile} {beach_h} 0.02</size></box></geometry></collision>')
+    return f'  <model name="terrain"><static>true</static><link name="l">{coll}{"".join(vis)}</link></model>'
+
+
+def nature(area, shore, rng):
+    out = []
+    k = 0
+    def inside(x, y, m=8.0):
+        return area["xmin"] - m < x < area["xmax"] + m and area["ymin"] - m < y < area["ymax"] + m
+    while k < 220:
+        x, y = rng.uniform(area["xmin"] - 120, area["xmax"] + 120), rng.uniform(shore + 6, area["ymax"] + 110)
+        if inside(x, y):
+            continue
+        k += 1
+        m = "pine_tree" if rng.random() < 0.6 else "oak_tree"
+        out.append(INCLUDE.format(m=m, n=f"tree_{k}", x=x, y=y, z=0.0, r=0, yaw=rng.uniform(0, 6.28), plugins=""))
+    rocks = [(area["xmin"] - 45, shore - 6), (area["xmax"] + 45, shore - 8), (40, area["ymin"] - 45), (150, area["ymin"] - 60), (260, area["ymin"] - 40), (area["xmin"] - 30, shore + 12)]
+    for i, (x, y) in enumerate(rocks):
+        out.append(INCLUDE.format(m="rock1" if i % 2 == 0 else "rock3", n=f"outcrop_{i}", x=x, y=y, z=-1.0, r=0, yaw=rng.uniform(0, 6.28), plugins=""))
+    return "".join(out)
+
+
 def build(scenario, params):
     area = params["mission"]["area"]
     shore = max(p[1] for poly in params["water"]["polygons"] for p in poly)
-    xmin, xmax = area["xmin"] - 60, area["xmax"] + 60
-    ymin, ymax = area["ymin"] - 60, area["ymax"] + 60
+    xmin, xmax = area["xmin"] - 220, area["xmax"] + 220
+    ymin, ymax = area["ymin"] - 200, area["ymax"] + 160
     hx, hy = params["mission"]["home"]
-    out = [HEAD.format(
-        ambient=params["perception"]["ambient_k"],
-        sea_x=(xmin + xmax) / 2, sea_y=(ymin + shore) / 2, sea_w=xmax - xmin, sea_h=shore - ymin,
-        beach_x=(xmin + xmax) / 2, beach_y=(shore + ymax) / 2, beach_w=xmax - xmin, beach_h=ymax - shore,
-        hx=hx, hy=hy)]
+    import random
+    out = [HEAD.format(ambient=params["perception"]["ambient_k"], terrain=terrain(xmin, xmax, ymin, ymax, shore), hx=hx, hy=hy)]
+    out.append(nature(area, shore, random.Random(11)))
     k = 0
     for o in scenario["objects"]:
         k += 1

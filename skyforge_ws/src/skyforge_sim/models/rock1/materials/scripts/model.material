@@ -1,0 +1,14 @@
+
+material UrbanTile/Rock_Diffuse
+{
+  technique
+  {
+    pass
+    {
+      texture_unit
+      {
+        texture Rock_Albedo.png
+        }
+      }
+    }
+  }
