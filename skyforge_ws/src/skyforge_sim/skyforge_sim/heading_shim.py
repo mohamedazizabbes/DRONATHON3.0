@@ -1,7 +1,7 @@
 import math
 
 import rclpy
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, Vector3
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 
@@ -20,6 +20,9 @@ class HeadingShim(Node):
         self.declare_parameter("min_speed", 0.8)
         self.declare_parameter("k_yaw", 1.5)
         self.declare_parameter("max_yaw_rate", 1.2)
+        self.declare_parameter("wind_gain", 0.35)
+        self.wind_gain = float(self.get_parameter("wind_gain").value)
+        self.wind = (0.0, 0.0)
         self.min_speed = float(self.get_parameter("min_speed").value)
         self.k = float(self.get_parameter("k_yaw").value)
         self.max_rate = float(self.get_parameter("max_yaw_rate").value)
@@ -29,11 +32,16 @@ class HeadingShim(Node):
         self.pub_odom = self.create_publisher(Odometry, "/odom", 10)
         self.create_subscription(Twist, "/cmd_vel", self.on_cmd, 10)
         self.create_subscription(Odometry, "/odom_gz", self.on_odom, 50)
+        self.create_subscription(Vector3, "/sim/wind_truth", lambda m: setattr(self, "wind", (m.x, m.y)), 10)
+        self.alt = 0.0
 
     def on_cmd(self, m: Twist):
         vx, vy, vz = m.linear.x, m.linear.y, m.linear.z
         if math.hypot(vx, vy) > self.min_speed:
             self.target_yaw = math.atan2(vy, vx)
+        if self.alt > 0.5:
+            vx += self.wind_gain * self.wind[0]
+            vy += self.wind_gain * self.wind[1]
         rate = max(-self.max_rate, min(self.max_rate, self.k * wrap(self.target_yaw - self.yaw)))
         c, s = math.cos(self.yaw), math.sin(self.yaw)
         out = Twist()
@@ -45,6 +53,7 @@ class HeadingShim(Node):
 
     def on_odom(self, m: Odometry):
         self.yaw = yaw_of(m.pose.pose.orientation)
+        self.alt = m.pose.pose.position.z
         c, s = math.cos(self.yaw), math.sin(self.yaw)
         bx, by = m.twist.twist.linear.x, m.twist.twist.linear.y
         m.twist.twist.linear.x = c * bx - s * by

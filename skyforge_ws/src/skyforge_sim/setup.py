@@ -27,5 +27,5 @@ setup(
     ] + tree("models"),
     install_requires=["setuptools"],
     zip_safe=True,
-    entry_points={"console_scripts": ["mover_node = skyforge_sim.mover_node:main", "make_world = skyforge_sim.make_world:main", "heading_shim = skyforge_sim.heading_shim:main"]},
+    entry_points={"console_scripts": ["mover_node = skyforge_sim.mover_node:main", "make_world = skyforge_sim.make_world:main", "heading_shim = skyforge_sim.heading_shim:main", "hud_node = skyforge_sim.hud_node:main", "weather_node = skyforge_sim.weather_node:main"]},
 )

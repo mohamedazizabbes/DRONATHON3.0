@@ -23,6 +23,11 @@ HEAD = """<?xml version="1.0"?>
     <visual name="v"><geometry><cylinder><radius>1.5</radius><length>0.01</length></cylinder></geometry>
     <material><ambient>0.2 0.6 0.2 1</ambient><diffuse>0.2 0.6 0.2 1</diffuse></material></visual></link></model>\n"""
 
+HOSTILE_VESSELS = [
+    {"id": "H-vessel-1", "p": [35.0, -48.0], "yaw": 0.4},
+    {"id": "H-vessel-2", "p": [215.0, -30.0], "yaw": 2.6, "patrol": [[215.0, -30.0], [215.0, -58.0]], "speed": 1.2},
+]
+
 SIM_OVERRIDES = {"health": {"odom_timeout_s": 2.0}}
 
 THERMAL = '<plugin filename="gz-sim-thermal-system" name="gz::sim::systems::Thermal"><temperature>{t}</temperature></plugin>'
@@ -119,6 +124,19 @@ def terrain(xmin, xmax, ymin, ymax, shore, tile=24.0):
     return f'  <model name="terrain"><static>true</static><link name="l">{coll}{"".join(vis)}</link></model>'
 
 
+def horizon(xmin, xmax, ymin, ymax, shore):
+    cx = (xmin + xmax) / 2
+    far = (f'  <model name="open_sea"><static>true</static><pose>{cx:.1f} {shore - 1000:.1f} -0.05 0 0 0</pose><link name="l">'
+           f'<visual name="v"><geometry><box><size>3000 2000 0.02</size></box></geometry><cast_shadows>false</cast_shadows>'
+           f'<material><ambient>0.03 0.2 0.33 1</ambient><diffuse>0.03 0.22 0.36 1</diffuse><specular>0.5 0.5 0.5 1</specular></material></visual></link></model>\n')
+    land = (f'  <model name="hinterland"><static>true</static><pose>{cx:.1f} {ymax + 700:.1f} -0.05 0 0 0</pose><link name="l">'
+            f'<visual name="v"><geometry><box><size>3000 1400 0.02</size></box></geometry><cast_shadows>false</cast_shadows>'
+            f'<material><ambient>0.6 0.55 0.4 1</ambient><diffuse>0.62 0.57 0.42 1</diffuse></material></visual></link></model>\n')
+    isles = "".join(INCLUDE.format(m="rock1" if i % 2 else "rock3", n=f"island_{i}", x=x, y=y, z=-2.0, r=0, yaw=i * 1.1, plugins="")
+                    for i, (x, y) in enumerate([(-300, -500), (100, -700), (450, -550), (700, -800), (-600, -900)]))
+    return far + land + isles
+
+
 def nature(area, shore, rng):
     out = []
     k = 0
@@ -174,12 +192,81 @@ def build(scenario, params):
             out.append(PRIM.format(n=o["id"], x=x, y=y, z=0.0, yaw=yaw, visuals=debris_visuals(o.get("size", 1.0), k), plugins=""))
     for o in scenario.get("obstacles", []):
         out.append(obstacle(o))
+    for v in scenario.get("hostile_vessels", HOSTILE_VESSELS):
+        out.append(INCLUDE.format(m="patrol_boat", n=v["id"], x=v["p"][0], y=v["p"][1], z=0.0, r=0, yaw=v["yaw"], plugins=THERMAL.format(t=320.0)))
+    out.append(horizon(xmin, xmax, ymin, ymax, shore))
     for m in scenario.get("moving_obstacles", []):
         x, y = m["loop"][0]
         out.append(INCLUDE.format(m="patrol_boat", n=m["id"], x=x, y=y, z=0.0, r=0, yaw=0, plugins=""))
     out.append(INCLUDE.format(m="skyforge_drone", n="skyforge", x=hx, y=hy, z=0.12, r=0, yaw=0, plugins="").replace("<static>true</static>", "<static>false</static>"))
     out.append("</world>\n</sdf>\n")
     return "".join(out)
+
+
+def random_scenario(seed, params):
+    import copy
+    import random
+    rng = random.Random(seed)
+    sc = copy.deepcopy(DEFAULT_SCENARIO)
+    sc["name"] = f"random_{seed}"
+    sc["seed"] = seed
+    area = params["mission"]["area"]
+    shore = max(p[1] for poly in params["water"]["polygons"] for p in poly)
+    hx, hy = params["mission"]["home"]
+    placed = []
+
+    def spot(water, clear=12.0, home_clear=20.0):
+        for _ in range(500):
+            x = rng.uniform(area["xmin"] + 15, area["xmax"] - 10)
+            y = rng.uniform(area["ymin"] + 8, shore - 6) if water else rng.uniform(shore + 6, area["ymax"] - 8)
+            if math.hypot(x - hx, y - hy) < home_clear:
+                continue
+            if all(math.hypot(x - a, y - b) >= clear for a, b in placed):
+                placed.append((x, y))
+                return [round(x, 1), round(y, 1)]
+        return [round(x, 1), round(y, 1)]
+
+    objs = []
+    cats = [("IMM", "lying", 309.5, False, False), ("IMM", "lying", 307.0, False, True), ("DEL", "sitting", 308.5, True, False),
+            ("MIN", "standing", 309.0, True, False), ("EXP", "lying", 296.0, False, False), ("DEL", "lying", 308.8, True, False)]
+    rng.shuffle(cats)
+    for i, (cat, post, temp, moving, water) in enumerate(cats[:rng.randint(4, 6)]):
+        o = {"id": f"T-{cat}-{i}", "cls": "injured", "p": spot(water), "size": 1.8 if post == "lying" else 1.2,
+             "temp_k": temp, "posture": post, "moving": moving, "cat": cat}
+        if water:
+            o["floating"] = True
+        objs.append(o)
+    for i in range(rng.randint(2, 3)):
+        fl = i == 0 or rng.random() < 0.4
+        o = {"id": f"T-mine-{i}", "cls": "mine", "p": spot(fl, clear=18.0), "size": round(rng.uniform(0.6, 0.8), 2)}
+        if fl:
+            o["floating"] = True
+        objs.append(o)
+    for i in range(rng.randint(1, 2)):
+        objs.append({"id": f"T-weapon-{i}", "cls": "weapon", "p": spot(False), "size": 1.0})
+    for i in range(rng.randint(1, 2)):
+        objs.append({"id": f"T-hostile-{i}", "cls": "hostile_unit", "p": spot(False, clear=30.0), "size": 2.0, "detection_radius": 20.0})
+    for i in range(rng.randint(2, 4)):
+        fl = rng.random() < 0.6
+        o = {"id": f"T-debris-{i}", "cls": "debris", "p": spot(fl, clear=8.0), "size": round(rng.uniform(0.8, 1.2), 2)}
+        if fl:
+            o["floating"] = True
+        objs.append(o)
+    sc["objects"] = objs
+    obst = []
+    for oid, r, h in (("lighthouse", 5.0, 40.0), ("rock", 4.0, 12.0), ("pole", 1.0, 30.0)):
+        obst.append({"id": oid, "p": spot(False, clear=20.0), "r": r, "h": h})
+    sc["obstacles"] = obst
+    sc["wind"] = [round(rng.uniform(-3, 4), 1), round(rng.uniform(-2, 3), 1)]
+    vessels = []
+    for i in range(2):
+        p0 = spot(True, clear=35.0)
+        v = {"id": f"H-vessel-{i + 1}", "p": p0, "yaw": round(rng.uniform(0, 6.28), 2)}
+        if i == 1:
+            v["patrol"] = [p0, [p0[0], max(area["ymin"] + 5, p0[1] - 25)]]
+            v["speed"] = 1.2
+        vessels.append(v)
+    return sc, vessels
 
 
 def write_config(scenario, base_yaml, out_yaml):
@@ -200,9 +287,19 @@ def main():
     ap.add_argument("--out", default=str(here / "worlds" / "coastal.sdf"))
     ap.add_argument("--base-config", default=str(here.parent / "skyforge_bringup" / "config" / "skyforge.yaml"))
     ap.add_argument("--out-config", default=str(here / "config" / "skyforge_gazebo.yaml"))
+    ap.add_argument("--seed", type=int, default=None)
     a = ap.parse_args()
-    Path(a.out).write_text(build(DEFAULT_SCENARIO, DEFAULTS))
-    write_config(DEFAULT_SCENARIO, a.base_config, a.out_config)
+    import json
+    if a.seed is None:
+        sc, vessels = DEFAULT_SCENARIO, HOSTILE_VESSELS
+    else:
+        sc, vessels = random_scenario(a.seed, DEFAULTS)
+    sc = dict(sc)
+    sc["hostile_vessels"] = vessels
+    Path(a.out).write_text(build(sc, DEFAULTS))
+    write_config(sc, a.base_config, a.out_config)
+    Path(a.out).with_name("hostile_vessels.json").write_text(json.dumps(vessels))
+    Path(a.out).with_name("scenario.json").write_text(json.dumps(sc))
     print(a.out, a.out_config)
 
 

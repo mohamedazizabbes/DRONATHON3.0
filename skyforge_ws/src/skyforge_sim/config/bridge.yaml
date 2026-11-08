@@ -13,7 +13,7 @@
   ros_type_name: nav_msgs/msg/Odometry
   gz_type_name: gz.msgs.Odometry
   direction: GZ_TO_ROS
-- ros_topic_name: /cam/rgb
+- ros_topic_name: /cam/rgb_raw
   gz_topic_name: /cam/rgb
   ros_type_name: sensor_msgs/msg/Image
   gz_type_name: gz.msgs.Image

@@ -115,6 +115,9 @@ class PerceptionAgent:
         self.predict(stamp, wind)
         self.stats["frames"] += 1
         alt = pos[2]
+        if alt < self.pp.get("min_detect_alt", 0.0):
+            self.stats["dets_low_alt"] = self.stats.get("dets_low_alt", 0) + len(detections)
+            return
         meas: list[tuple[Detection, tuple[float, float], float]] = []
         thr = self.pp["conf_threshold"]
         for d in detections:

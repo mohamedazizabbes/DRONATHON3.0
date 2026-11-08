@@ -2,7 +2,6 @@ import json
 import math
 
 import rclpy
-from geometry_msgs.msg import Vector3
 from rclpy.node import Node
 from ros_gz_interfaces.msg import Entity
 from ros_gz_interfaces.srv import SetEntityPose
@@ -18,10 +17,12 @@ class Mover(Node):
         self.declare_parameter("world", "skyforge")
         self.declare_parameter("rate", 10.0)
         self.declare_parameter("drift", True)
+        self.declare_parameter("scenario_file", "")
         self.declare_parameter("wave_amp", 0.1)
         self.declare_parameter("wave_period", 4.0)
         self.t = 0.0
-        sc = DEFAULT_SCENARIO
+        sf = self.get_parameter("scenario_file").value
+        sc = json.load(open(sf)) if sf else DEFAULT_SCENARIO
         shore = max(p[1] for poly in DEFAULTS["water"]["polygons"] for p in poly)
         self.wind = list(sc.get("wind", [0.0, 0.0]))
         cur = sc.get("current", DEFAULTS["drift"]["current"])
@@ -37,10 +38,21 @@ class Mover(Node):
                                           "phase": (len(self.floaters) * 1.7) % (2 * math.pi), "yaw": (len(self.floaters) * 2.3) % (2 * math.pi)})
         self.static = [{"p": list(o["p"]), "r": float(o["r"]), "h": float(o["h"]), "v": [0.0, 0.0]} for o in sc.get("obstacles", [])]
         self.movers = [{**m, "p": list(m["loop"][0]), "seg": 0, "v": [0.0, 0.0]} for m in sc.get("moving_obstacles", [])]
+        vessels = sc.get("hostile_vessels")
+        if vessels is None:
+            try:
+                from ament_index_python.packages import get_package_share_directory
+                import os
+                vessels = json.load(open(os.path.join(get_package_share_directory("skyforge_sim"), "worlds", "hostile_vessels.json")))
+            except (OSError, ValueError):
+                vessels = []
+        for v in vessels:
+            if "patrol" in v:
+                self.movers.append({"id": v["id"], "loop": v["patrol"], "speed": v["speed"], "r": 0.0, "h": 0.0,
+                                    "p": list(v["patrol"][0]), "seg": 0, "v": [0.0, 0.0], "hostile": True})
         w = self.get_parameter("world").value
         self.cli = self.create_client(SetEntityPose, f"/world/{w}/set_pose")
         self.pub_obs = self.create_publisher(String, "/skyforge/obstacles", 10)
-        self.pub_wind = self.create_publisher(Vector3, "/skyforge/wind", 10)
         self.dt = 1.0 / float(self.get_parameter("rate").value)
         self.create_timer(self.dt, self.tick)
 
@@ -87,9 +99,8 @@ class Mover(Node):
             self.set_pose(f["id"], f["p"][0], f["p"][1], f["z"] + amp * math.sin(ph), f["roll"] + 0.08 * math.sin(ph + 0.7),
                           f["yaw"], 0.08 * math.cos(ph))
         obs = self.static + [{"p": [round(m["p"][0], 2), round(m["p"][1], 2)], "r": float(m["r"]), "h": float(m["h"]),
-                              "v": [round(m["v"][0], 2), round(m["v"][1], 2)]} for m in self.movers]
+                              "v": [round(m["v"][0], 2), round(m["v"][1], 2)]} for m in self.movers if not m.get("hostile")]
         self.pub_obs.publish(String(data=json.dumps(obs, separators=(",", ":"))))
-        self.pub_wind.publish(Vector3(x=float(self.wind[0]), y=float(self.wind[1]), z=0.0))
 
 
 def main():

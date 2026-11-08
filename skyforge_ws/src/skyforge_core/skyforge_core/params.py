@@ -67,6 +67,7 @@ DEFAULTS: dict[str, Any] = {
         "confirm_hits": 3,
         "confirm_window": 5,
         "delete_after_misses": 4,  # unconfirmed tracks only
+        "min_detect_alt": 3.0,
         "conf_threshold": {
             "default": 0.25,
             "mine": 0.15,
