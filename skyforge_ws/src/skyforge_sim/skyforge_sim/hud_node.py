@@ -60,6 +60,9 @@ class Hud(Node):
         self.create_subscription(ZoneArray, "/perception/zones", lambda m: setattr(self, "zones", m.zones), 10)
         self.create_subscription(Path, "/plan/waypoints", lambda m: setattr(self, "path", [(p.pose.position.x, p.pose.position.y) for p in m.poses]), 10)
         self.tracks, self.zones, self.path, self.trail = [], [], [], []
+        self.truth = []
+        self.found = set()
+        self.create_subscription(String, "/sim/truth", self.on_truth, 10)
         self.pos = (0.0, 0.0)
         area = DEFAULTS["mission"]["area"]
         self.shore = max(p[1] for poly in DEFAULTS["water"]["polygons"] for p in poly)
@@ -75,6 +78,12 @@ class Hud(Node):
         try:
             d = json.loads(m.data)
             self.dets[src] = (d.get("detections", []), tuple(d.get("image", [640, 480])), time.time())
+        except ValueError:
+            pass
+
+    def on_truth(self, m):
+        try:
+            self.truth = json.loads(m.data)
         except ValueError:
             pass
 
@@ -141,21 +150,97 @@ class Hud(Node):
         if len(self.path) > 1:
             cv2.polylines(img, [np.array([P(self.pos[0], self.pos[1])] + [P(*p) for p in self.path], np.int32)], False, GREEN, 1)
         catcol = {"IMM": RED, "DEL": ORANGE, "MIN": GREEN, "EXP": GREY, "UNK": WHITE}
+        wcol = (220, 80, 220)
+        for o in self.truth:
+            for t in self.tracks:
+                if t.confirmed and t.cls == o.get("cls") and math.hypot(t.x - o["p"][0], t.y - o["p"][1]) < 10.0:
+                    self.found.add(o["id"])
+        for o in self.truth:
+            c = P(*o["p"])
+            if o["id"] in self.found:
+                continue
+            cls = o.get("cls")
+            col = (110, 110, 110)
+            if cls == "injured":
+                cv2.circle(img, c, 7, col, 1, cv2.LINE_AA)
+            elif cls == "mine":
+                cv2.polylines(img, [np.array([(c[0], c[1] - 7), (c[0] + 7, c[1]), (c[0], c[1] + 7), (c[0] - 7, c[1])], np.int32)], True, col, 1)
+            elif cls == "hostile_unit":
+                cv2.rectangle(img, (c[0] - 7, c[1] - 7), (c[0] + 7, c[1] + 7), col, 1)
+            elif cls == "weapon":
+                cv2.drawMarker(img, c, col, cv2.MARKER_TILTED_CROSS, 12, 1)
+            else:
+                cv2.circle(img, c, 4, col, 1)
+            self.text(img, "?", (c[0] - 4, c[1] + 4), col, 0.4)
         for t in self.tracks:
             c = P(t.x, t.y)
             fill = -1 if t.confirmed else 2
             if t.cls == "injured":
-                cv2.circle(img, c, 6, catcol.get(t.category, WHITE), fill)
-                self.text(img, f"{t.id} {t.category}", (c[0] + 8, c[1] - 6), catcol.get(t.category, WHITE), 0.42)
+                cv2.circle(img, c, 7, catcol.get(t.category, WHITE), fill, cv2.LINE_AA)
+                self.text(img, f"{t.id} {t.category}", (c[0] + 9, c[1] - 6), catcol.get(t.category, WHITE), 0.42)
             elif t.cls == "mine":
-                pts = np.array([(c[0], c[1] - 7), (c[0] + 7, c[1]), (c[0], c[1] + 7), (c[0] - 7, c[1])], np.int32)
-                cv2.polylines(img, [pts], True, YELLOW, 2) if not t.confirmed else cv2.fillPoly(img, [pts], YELLOW)
+                pts = np.array([(c[0], c[1] - 8), (c[0] + 8, c[1]), (c[0], c[1] + 8), (c[0] - 8, c[1])], np.int32)
+                if t.confirmed:
+                    cv2.fillPoly(img, [pts], YELLOW)
+                else:
+                    cv2.polylines(img, [pts], True, YELLOW, 2)
             elif t.cls == "hostile_unit":
-                cv2.rectangle(img, (c[0] - 6, c[1] - 6), (c[0] + 6, c[1] + 6), RED, fill)
+                cv2.rectangle(img, (c[0] - 7, c[1] - 7), (c[0] + 7, c[1] + 7), RED, fill)
             elif t.cls == "weapon":
-                cv2.drawMarker(img, c, (220, 80, 220), cv2.MARKER_TILTED_CROSS, 12, 2)
+                cv2.drawMarker(img, c, wcol, cv2.MARKER_TILTED_CROSS, 14, 2)
             else:
-                cv2.circle(img, c, 3, (60, 120, 170), fill)
+                cv2.circle(img, c, 4, (60, 140, 200), fill)
+            if t.confirmed:
+                cv2.drawMarker(img, (c[0] + 8, c[1] + 8), GREEN, cv2.MARKER_STAR, 7, 1)
+        totals, founds = {}, {}
+        for o in self.truth:
+            k = o.get("cls", "")
+            totals[k] = totals.get(k, 0) + 1
+            if o["id"] in self.found:
+                founds[k] = founds.get(k, 0) + 1
+        names = (("injured", "casualties"), ("mine", "mines"), ("hostile_unit", "hostile"), ("weapon", "weapons"), ("debris", "debris"))
+        fx, fy = 10, h - 12
+        line = "FOUND  " + "   ".join(f"{n} {founds.get(k, 0)}/{totals[k]}" for k, n in names if k in totals)
+        cv2.rectangle(img, (0, h - 30), (w, h), (25, 25, 25), -1)
+        self.text(img, line, (fx, fy), WHITE, 0.45)
+        lx, ly = w - 170, 20
+        cv2.rectangle(img, (lx - 8, ly - 14), (w - 6, ly + 196), (25, 25, 25), -1)
+        cv2.rectangle(img, (lx - 8, ly - 14), (w - 6, ly + 196), (80, 80, 80), 1)
+        entries = [
+            ("circle", RED, "casualty IMM"), ("circle", ORANGE, "casualty DEL"), ("circle", GREEN, "casualty MIN"),
+            ("circle", GREY, "casualty EXP"), ("diamond", YELLOW, "mine"), ("square", RED, "hostile unit"),
+            ("cross", wcol, "weapon"), ("dot", (60, 140, 200), "debris"), ("zone", RED, "exclusion zone"),
+            ("ghost", (110, 110, 110), "not found yet"), ("drone", CYAN, "drone"),
+        ]
+        for i, (shape, col, label) in enumerate(entries):
+            y = ly + i * 17
+            c = (lx + 6, y)
+            if shape == "circle":
+                cv2.circle(img, c, 5, col, -1)
+            elif shape == "diamond":
+                cv2.fillPoly(img, [np.array([(c[0], c[1] - 6), (c[0] + 6, c[1]), (c[0], c[1] + 6), (c[0] - 6, c[1])], np.int32)], col)
+            elif shape == "square":
+                cv2.rectangle(img, (c[0] - 5, c[1] - 5), (c[0] + 5, c[1] + 5), col, -1)
+            elif shape == "cross":
+                cv2.drawMarker(img, c, col, cv2.MARKER_TILTED_CROSS, 10, 2)
+            elif shape == "dot":
+                cv2.circle(img, c, 3, col, -1)
+            elif shape == "zone":
+                cv2.circle(img, c, 6, col, 1)
+            elif shape == "ghost":
+                cv2.circle(img, c, 5, col, 1)
+            else:
+                cv2.fillPoly(img, [np.array([(c[0] + 7, c[1]), (c[0] - 5, c[1] - 5), (c[0] - 5, c[1] + 5)], np.int32)], col)
+            self.text(img, label, (lx + 18, y + 4), WHITE, 0.4)
+        sb = 50.0
+        x_a, y_a = 14, h - 44
+        x_b = x_a + int(sb * sc)
+        cv2.line(img, (x_a, y_a), (x_b, y_a), WHITE, 2)
+        cv2.line(img, (x_a, y_a - 5), (x_a, y_a + 5), WHITE, 2)
+        cv2.line(img, (x_b, y_a - 5), (x_b, y_a + 5), WHITE, 2)
+        self.text(img, f"{int(sb)} m", (x_a + (x_b - x_a) // 2 - 14, y_a - 8), WHITE, 0.45)
+        self.text(img, "N", (14, 40), WHITE, 0.55)
+        cv2.arrowedLine(img, (19, 70), (19, 48), WHITE, 2, tipLength=0.4)
         d = P(*self.pos)
         a_ = math.radians(self.yaw)
         tip = (int(d[0] + 12 * math.cos(a_)), int(d[1] - 12 * math.sin(a_)))

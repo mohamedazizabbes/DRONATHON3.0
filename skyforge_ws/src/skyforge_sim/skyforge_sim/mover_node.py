@@ -53,6 +53,12 @@ class Mover(Node):
         w = self.get_parameter("world").value
         self.cli = self.create_client(SetEntityPose, f"/world/{w}/set_pose")
         self.pub_obs = self.create_publisher(String, "/skyforge/obstacles", 10)
+        self.pub_truth = self.create_publisher(String, "/sim/truth", 10)
+        self.truth_static = [{"id": o["id"], "cls": o["cls"], "p": list(o["p"]), "cat": o.get("cat", ""), "posture": o.get("posture", "")}
+                             for o in sc["objects"] if not o.get("floating", o["p"][1] < shore)]
+        self.truth_vessels = [{"id": v["id"], "cls": "hostile_unit", "p": list(v["p"])} for v in vessels if "patrol" not in v]
+        self.truth_meta = {o["id"]: {"cls": o["cls"], "cat": o.get("cat", ""), "posture": o.get("posture", "")} for o in sc["objects"]}
+        self.ticks = 0
         self.dt = 1.0 / float(self.get_parameter("rate").value)
         self.create_timer(self.dt, self.tick)
 
@@ -101,6 +107,16 @@ class Mover(Node):
         obs = self.static + [{"p": [round(m["p"][0], 2), round(m["p"][1], 2)], "r": float(m["r"]), "h": float(m["h"]),
                               "v": [round(m["v"][0], 2), round(m["v"][1], 2)]} for m in self.movers if not m.get("hostile")]
         self.pub_obs.publish(String(data=json.dumps(obs, separators=(",", ":"))))
+        self.ticks += 1
+        if self.ticks % 5 == 0:
+            truth = list(self.truth_static) + list(self.truth_vessels)
+            for f in self.floaters:
+                meta = self.truth_meta.get(f["id"], {"cls": "", "cat": "", "posture": ""})
+                truth.append({"id": f["id"], "p": [round(f["p"][0], 1), round(f["p"][1], 1)], **meta})
+            for mv in self.movers:
+                if mv.get("hostile"):
+                    truth.append({"id": mv["id"], "cls": "hostile_unit", "p": [round(mv["p"][0], 1), round(mv["p"][1], 1)]})
+            self.pub_truth.publish(String(data=json.dumps(truth, separators=(",", ":"))))
 
 
 def main():
