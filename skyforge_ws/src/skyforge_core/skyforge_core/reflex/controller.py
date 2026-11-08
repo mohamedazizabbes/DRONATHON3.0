@@ -154,6 +154,10 @@ class ReflexController:
         # footprint is large enough to see danger zones before entering them
         if pos[2] < rp["climb_first_frac"] * target[2] and target[2] - pos[2] > 3.0:
             vx, vy = 0.0, 0.0
+        # descend last (mirror rule): keep cruise altitude, hence a large camera
+        # footprint, until above a lower target (delivery, sonar dip, landing)
+        if target[2] < pos[2] - 3.0 and math.hypot(dx, dy) > rp["descend_radius_m"]:
+            vz = max(vz, 0.0)
         dvx, dvy = self.last_des
         if math.hypot(dvx, dvy) > 0.5:
             self.yaw = math.atan2(dvy, dvx)

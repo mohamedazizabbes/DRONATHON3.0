@@ -32,6 +32,8 @@ def generate_launch_description():
         DeclareLaunchArgument("vision", default_value="true", description="start the two vision_node wrappers"),
         DeclareLaunchArgument("fault_script", default_value=""),
         DeclareLaunchArgument("viz", default_value="true", description="publish /viz/markers for Foxglove"),
+        DeclareLaunchArgument("resume_snapshot", default_value="",
+                              description="drone 2 after a MAYDAY: path to the station's mayday_snapshot.json"),
         DeclareLaunchArgument("use_sim_time", default_value="false",
                               description="true only if /clock is bridged from Gazebo, else all timers freeze"),
     ]
@@ -43,8 +45,8 @@ def generate_launch_description():
 
     nodes = [
         node("reflex_node", extra={"backend": LaunchConfiguration("backend")}),
-        node("orchestrator_node"),
-        node("perception_agent_node"),
+        node("orchestrator_node", extra={"resume_snapshot": LaunchConfiguration("resume_snapshot")}),
+        node("perception_agent_node", extra={"resume_snapshot": LaunchConfiguration("resume_snapshot")}),
         node("comm_node", extra={"mode": LaunchConfiguration("comm_mode"), "pi_host": LaunchConfiguration("pi_host")}),
         node("health_node"),
         node("nav_integrity_node"),

@@ -10,7 +10,7 @@ import random
 import time
 from typing import Callable, Optional
 
-from .protocol import PRIORITY, Codec, ForgedMessage, Reassembler, ReplayGuard
+from .protocol import GOAL_TYPES, PRIORITY, Codec, ForgedMessage, Reassembler, ReplayGuard, normalize_goal
 from .ring_buffer import RingBuffer
 
 
@@ -79,19 +79,36 @@ class DroneComm:
             self.events.append({"ts": now, "type": "link", "msg": "comm: link down, buffering"})
         else:
             self.last_outage_s = now - (self.outage_start or now)
+            # proactive replay of everything that never left (in order); a station that does
+            # not implement our ack protocol (jury station) still gets the outage's messages
+            for seq, (prio, data, tx) in list(self.buffer.items.items()):
+                if not tx and self._tx(data):
+                    self.buffer.mark_transmitted(seq)
+                    self.buffer.mark_replayed(seq, now)
+                    self.stats["replayed"] += 1
             self.events.append({"ts": now, "type": "link", "msg": f"comm: link up after {self.last_outage_s:.1f}s, "
                                 f"{len(self.buffer)} msgs buffered"})
 
     # ------------------------------------------------------------- incoming
     def on_receive(self, data: bytes, now: float) -> list[dict]:
         """Returns verified goal_update bodies for the orchestrator."""
+        compat = self.p.get("station_auth", "hmac") == "none"
         try:
             msg = self.codec.decode(data)
         except ForgedMessage as e:
-            self.stats["forged_rejected"] += 1
-            self.events.append({"ts": now, "type": "security", "msg": f"forged_rejected: {e}", "event": "forged_rejected"})
-            return []
-        if not self.guard.check(msg):
+            if not compat:
+                self.stats["forged_rejected"] += 1
+                self.events.append({"ts": now, "type": "security", "msg": f"forged_rejected: {e}", "event": "forged_rejected"})
+                return []
+            try:  # jury station without our key: accept unsigned (forgery protection OFF)
+                msg = self.codec.decode_unverified(data)
+            except ForgedMessage:
+                return []
+            self.stats["unsigned_accepted"] = self.stats.get("unsigned_accepted", 0) + 1
+            if self.stats["unsigned_accepted"] == 1:
+                self.events.append({"ts": now, "type": "security", "event": "unsigned_mode",
+                                    "msg": "WARNING: unsigned station message accepted (station_auth=none, forgery protection OFF)"})
+        if "seq" in msg and "b" in msg and not self.guard.check(msg):
             self.stats["replay_rejected"] += 1
             self.events.append({"ts": now, "type": "security", "msg": f"replay_rejected seq {msg.get('seq')}",
                                 "event": "replay_rejected"})
@@ -100,10 +117,10 @@ class DroneComm:
         if t == "ack":
             self._on_ack(int(msg["last"]), int(msg.get("max", msg["last"])), now)
             return []
-        if t == "goal":
-            g = dict(msg.get("g", {}))
+        if t in GOAL_TYPES or (compat and t is None and ("type" in msg or "goal" in msg)):
+            g = normalize_goal(msg)
             g["_recv_t"] = now
-            g["_seq"] = msg["seq"]
+            g["_seq"] = msg.get("seq")
             self.stats["goals_accepted"] += 1
             return [g]
         return []

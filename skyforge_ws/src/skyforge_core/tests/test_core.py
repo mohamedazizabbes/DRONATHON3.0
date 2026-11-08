@@ -1,6 +1,7 @@
 """Unit tests for the SKYFORGE core. Run:  pytest skyforge_ws/src/skyforge_core/tests -q"""
 import json
 import math
+import os
 
 import pytest
 
@@ -349,3 +350,256 @@ def test_short_sim_smoke(tmp_path, P):
     assert m["triage"]["off_target"] == 0 and m["triage"]["served_on_target"] >= 3
     assert all(p == "LANDED" for p in m["final_phase"])
     assert m["comms"]["max_bytes"] < 1024
+    if m["rth"]:  # never land inside the energy reserve (spec penalty: impossible return)
+        assert m["rth"]["battery_at_landing_pct"] >= m["rth"]["reserve_pct"]
+
+
+# ------------------------------------------------- energy model v2 / agent
+def test_headwind_stronger_than_cruise_does_not_explode(P):
+    e = EnergyModel.from_params(P)
+    calm = e.e_rth((200, 0), (0, 0), 6.0, (0, 0))
+    gale = e.e_rth((200, 0), (0, 0), 6.0, (7.0, 0))  # 7 m/s * 1.2 gust > 6 m/s cruise, blowing away from home
+    assert calm < gale < 4 * calm  # airspeed rises to ~14 m/s, ground speed held: no 1 m/s collapse
+    storm = e.e_rth((200, 0), (0, 0), 6.0, (15.0, 0))  # beyond the airframe: ground speed drops, energy grows a lot
+    assert storm > gale
+
+
+def test_energy_calibration_converges(P):
+    e = EnergyModel.from_params(P)
+    true_scale, wh, t = 1.25, 80.0, 0.0
+    vel, wind = (6.0, 0.0, 0.0), (0.0, 0.0)
+    for _ in range(600):  # 60 s at 10 Hz, steady cruise
+        t += 0.1
+        wh -= true_scale * e.p_hover_w * (1 + e.k_speed * 36.0) * 0.1 / 3600.0
+        e.calibrate(t, wh, vel, wind, airborne=True)
+    assert abs(e.scale - true_scale) < 0.05
+
+
+def test_evasive_exit_from_hostile_line_of_sight(P):
+    from skyforge_core.planning.agent import PlannerAgent
+
+    ag = PlannerAgent(P)
+    hostile = Zone("ZH1", Cls.HOSTILE, (100.0, 0.0), 25.0, soft_radius=40.0)
+    s = {"pos": (90.0, 20.0, 25.0), "zones": [hostile], "manual_zones": [], "wind": (0, 0), "gnss_ok": True}
+    res = ag.plan_path(s, (0.0, 60.0))
+    assert res.ok and res.reason.startswith("evasive")
+    exit_pt = res.path[1]
+    assert math.hypot(exit_pt[0] - 100.0, exit_pt[1]) >= 40.0  # first leg leaves the ring
+    assert ag.waypoint_alt(s, (95.0, 30.0), 25.0) == P["planner"]["evasive_alt"]
+    assert ag.waypoint_alt(s, (0.0, 60.0), 25.0) == 25.0
+
+
+def test_flir_deceased_rules(P):
+    pp = P["perception"]
+    kw = dict(ambient_k=pp["ambient_k"], warm_delta_k=pp["warm_delta_k"], immobile_s=pp["immobile_s"],
+              deceased_delta_k=pp["deceased_delta_k"], deceased_obs_s=pp["deceased_obs_s"])
+    # ambient skin + no breathing for long enough, on land -> likely deceased
+    assert classify(295.5, "lying", False, 30, False, False, False, no_breath_s=10, **kw)[0] == Start.DECEASED
+    # same but breathing seen recently -> still EXPECTANT (alive until proven otherwise)
+    assert classify(295.5, "lying", False, 30, False, False, False, no_breath_s=2, **kw)[0] == Start.EXPECTANT
+    # cold skin IN WATER is never "deceased": possible hypothermia -> IMMEDIATE
+    assert classify(295.5, "lying", False, 30, True, False, False, no_breath_s=60, **kw)[0] == Start.IMMEDIATE
+    # cool but moving -> alive, DELAYED
+    assert classify(298.0, "sitting", True, 30, False, False, False, **kw)[0] == Start.DELAYED
+    # proximity to a mine never upgrades a DCD
+    assert classify(295.5, "lying", False, 30, False, False, True, no_breath_s=10, **kw)[0] == Start.DECEASED
+
+
+def test_deceased_never_gets_a_kit(P):
+    from skyforge_core.planning.agent import PlannerAgent
+
+    ag = PlannerAgent(P)
+    dcd = _cas("C9", (20.0, 0.0), Start.DECEASED)
+    dcd.attrs["likely_deceased"] = True
+    exp = _cas("C10", (150.0, 0.0), Start.EXPECTANT)
+    s = {"pos": (0.0, 0.0, 25.0), "casualties": [dcd, exp], "served_ids": [], "failed_ids": [], "battery_wh": 80.0,
+         "wind": (0, 0), "gnss_ok": True, "zones": [], "manual_zones": []}
+    res = ag.triage(s)
+    assert res.best.id == "C10" and all(c.id != "C9" for c in res.ranked)
+
+
+def test_sea_state_tracks_a_current_change():
+    from skyforge_core.perception.sea_state import SeaStateEstimator
+
+    sea = SeaStateEstimator((0.15, 0.05), k_leeway=0.03, tau_s=30.0)
+    wind = (2.0, 0.0)
+    t = 0.0
+    for _ in range(1200):  # 120 s observing floating objects that drift with a NEW current (0.32, -0.06)
+        t += 0.1
+        v = (0.32 + 0.03 * wind[0], -0.06)
+        sea.update(t, [(v[0], v[1], 0.01), (v[0] + 0.05, v[1] - 0.05, 0.04)], wind)
+    assert abs(sea.current[0] - 0.32) < 0.03 and abs(sea.current[1] + 0.06) < 0.03
+
+
+def test_long_gap_reid_learns_the_drift(P):
+    """A floating casualty seen, lost for 120 s, then re-seen far away keeps its id
+    and its displacement/time teaches the sea-state estimator the real current."""
+    ag = PerceptionAgent(P)
+    cam = ag.cam
+    rpy = (0.0, 0.0, 0.0)
+    true_v = (0.35, -0.05)  # real drift, quite different from the forecast prior
+    p0 = (60.0, -50.0)
+
+    def frame(t, drone_xy, obj):
+        pos = (drone_xy[0], drone_xy[1], 25.0)
+        px = world_to_pixel(obj, pos, rpy, cam)
+        d = Detection(Cls.INJURED, 0.8, (px[0] - 6, px[1] - 6, px[0] + 6, px[1] + 6), t, "team",
+                      {"temp_k": 308.0, "posture": "lying", "moving": False})
+        ag.process([d], pos, rpy, t)
+
+    for k in range(6):  # seen for ~1 s
+        frame(0.2 * k, p0, p0)
+    tid = ag.confirmed()[0].id
+    t = 120.0
+    obj = (p0[0] + true_v[0] * t, p0[1] + true_v[1] * t)
+    for k in range(3):
+        frame(t + 0.2 * k, obj, (obj[0] + true_v[0] * 0.2 * k, obj[1] + true_v[1] * 0.2 * k))
+    floats = [x for x in ag.confirmed() if x.cls == Cls.INJURED]
+    assert [x.id for x in floats] == [tid]  # same person, no new identity
+    assert math.hypot(ag.sea.current[0] - (true_v[0] - 0.0), ag.sea.current[1] - true_v[1]) < \
+        math.hypot(P["drift"]["current"][0] - true_v[0], P["drift"]["current"][1] - true_v[1])  # moved toward the truth
+
+
+def test_mayday_handover_resumes_in_triage(P, tmp_path):
+    from skyforge_core.brain.handover import load_snapshot, maybe_resume
+    from skyforge_core.brain.state import snapshot
+
+    o1 = Orchestrator(P, engine="fsm")
+    served, todo = _cas("C1", (40.0, 10.0), Start.IMMEDIATE), _cas("C2", (80.0, -20.0), Start.DELAYED)
+    o1.state.update(casualties=[served, todo], served_ids=["C1"], explore_idx=3)
+    path = tmp_path / "mayday_snapshot.json"
+    path.write_text(json.dumps({"t": "may", "s": snapshot(o1.state)}), encoding="utf-8")
+    assert load_snapshot(str(path))["explore_idx"] == 3
+
+    o2, ag2 = Orchestrator(P, engine="fsm"), PerceptionAgent(P)
+    res = maybe_resume(str(path), o2, ag2, 0.0)
+    assert res["casualties_to_serve"] == 1 and o2.state["served_ids"] == ["C1"]
+    tracks = {t.id: t for t in ag2.confirmed()}
+    assert tracks["C1"].attrs.get("marked") and not tracks["C2"].attrs.get("marked")
+    s = o2.tick({"t": 0.1, "armed": True, "pos": (0.0, 0.0, 25.0), "battery_wh": 60.0, "casualties": ag2.casualties()})
+    assert s["phase"] == Phase.NAVIGATE and s["target"]["id"] == "C2"  # INIT -> TRIAGE -> NAVIGATE, skips the served one
+
+
+# ----------------------------------------------------- mine layers 2 and 3
+def _mag_passes(P, mine=(0.0, 10.0), depth=3.0, lanes=(0.0, 34.0), k=4e4, seed=1):
+    import random
+
+    from skyforge_core.perception.magnetic import MagAnomalyDetector
+
+    rng = random.Random(seed)
+    det, t, out = MagAnomalyDetector(P), 0.0, []
+    for lane_y in lanes:
+        for i in range(600):
+            t += 0.1
+            x = -180 + 0.6 * i
+            r2 = (x - mine[0]) ** 2 + (lane_y - mine[1]) ** 2 + (25 + depth) ** 2
+            c = det.add_sample(t, (x, lane_y, 25.0), 45000 + k / r2 ** 1.5 + rng.gauss(0, 0.15))
+            if c:
+                out.append(c)
+    return out
+
+
+def test_magnetometer_two_pass_inversion_and_single_pass_flag(P):
+    cs = _mag_passes(P)
+    assert cs[0].single_pass and cs[0].sigma > 5.0  # one lane: side/depth ambiguity is declared
+    best = cs[-1]
+    assert not best.single_pass and math.hypot(best.pos[0], best.pos[1] - 10.0) < 3.0  # two lanes: resolved
+
+
+def test_mag_contact_on_weapon_is_attributed_not_a_mine(P):
+    ag = PerceptionAgent(P)
+    w = Track("W1", Cls.WEAPON, (40.0, 75.0), 1.0, confirmed=True)
+    from skyforge_core.perception.agent import _TrackState
+
+    ag._tracks["W1"] = _TrackState(w, DriftKF((40.0, 75.0), 1.0, False), 5)
+    assert ag.add_mine_contact("mag", (42.0, 76.0), 0.0, 3.0, 0.9, 1.0) is None
+    assert not [t for t in ag.tracks() if t.cls == Cls.MINE] and "mag" in w.attrs["layers"]
+
+
+def test_non_visual_mine_contact_survives_camera_and_confirms_on_repeat(P):
+    ag = PerceptionAgent(P)
+    tr = ag.add_mine_contact("mag", (5.0, 3.0), 0.3, 4.0, 0.3, 1.0)  # weak, tentative
+    assert tr is not None and not tr.confirmed
+    for k in range(10):  # the camera looks right at it and sees nothing: must NOT delete it
+        ag.process([], (5.0, 3.0, 25.0), (0.0, 0.0, 0.0), 2.0 + 0.2 * k)
+    assert any(t.id == tr.id for t in ag.tracks())
+
+
+def test_sonar_ping_geometry_and_confirmation(P):
+    ag = PerceptionAgent(P)
+    out = ag.add_sonar_ping((100.0, -45.0), [{"range": 30.0, "bearing": math.pi, "depth": 12.0, "strength": 0.8},
+                                             {"range": 20.0, "bearing": 0.0, "depth": 5.0, "strength": 0.3}], 1.0)
+    strong, weak = out
+    assert strong.pos == pytest.approx((70.0, -45.0), abs=1e-6) and strong.confirmed and strong.attrs["submerged"]
+    assert not weak.confirmed  # rock-like weak return never confirms alone
+    z = [z for z in ag.zones() if z.id == f"Z{strong.id}"][0]
+    assert z.radius >= P["zones"]["safety_submerged_mine"]
+
+
+def test_jury_station_compatibility_mode(P):
+    from skyforge_core.params import deep_merge
+
+    jury_cmd = json.dumps({"type": "goal_update", "goal": {"cmd": "waypoint", "position": [120, 40]}}).encode()
+    strict = DroneComm(P, lambda d: True, boot_id=3)
+    assert strict.on_receive(jury_cmd, 1.0) == [] and strict.stats["forged_rejected"] == 1  # default: HMAC required
+    compat = DroneComm(deep_merge(P, {"comm": {"station_auth": "none"}}), lambda d: True, boot_id=3)
+    g = compat.on_receive(jury_cmd, 1.0)
+    assert len(g) == 1 and g[0]["type"] == "goto" and g[0]["p"] == [120, 40]
+    assert any(e.get("event") == "unsigned_mode" for e in compat.pop_events())  # logged loudly
+    w = compat.on_receive(json.dumps({"t": "goal", "g": {"type": "météo", "wind": [3, 1], "visibility": 0.4}}).encode(), 2.0)
+    assert w[0]["type"] == "weather"
+
+
+def test_mission_map_export(P, tmp_path):
+    from skyforge_core.mission_map import export_mission_map, track_row
+    from skyforge_core.planning.coverage import CoverageGrid
+
+    cov = CoverageGrid(P["mission"]["area"])
+    cov.mark_seen((50, 0), 25.0, 80.0, 60.0)
+    m = _cas("C1", (40.0, 10.0), Start.IMMEDIATE)
+    mine = Track("M1", Cls.MINE, (60.0, -40.0), 2.0, confirmed=True, attrs={"layers": ["sonar"], "depth": 12.0})
+    out = export_mission_map(str(tmp_path), P["mission"]["area"], [track_row(m, ["C1"]), track_row(mine)],
+                             [{"id": "ZM1", "cls": "mine", "center": [60, -40], "radius": 15.0}], cov, [(0, 0), (50, 0)], ["C1"],
+                             P["water"]["polygons"], "map")
+    doc = json.loads(open(out["json"], encoding="utf-8").read())
+    assert doc["objects"][0]["served"] and doc["objects"][1]["layers"] == ["sonar"] and 0 < doc["coverage"] < 1
+    assert out["png"] and os.path.exists(out["png"])
+
+
+def test_phantom_magnetic_cue_rejected_by_sonar_but_confirmed_mines_kept(P):
+    ag = PerceptionAgent(P)
+    cue = ag.add_mine_contact("mag", (100.0, -50.0), 3.0, 5.0, 0.3, 1.0)  # weak cue in water
+    real = ag.add_mine_contact("sonar", (130.0, -50.0), 8.0, 1.5, 0.9, 1.0)  # confirmed mine
+    assert not cue.confirmed and real.confirmed
+    ag.add_sonar_ping((110.0, -45.0), [], 2.0)  # dip right next to both: hears nothing
+    ids = {t.id for t in ag.tracks()}
+    assert cue.id not in ids and real.id in ids  # phantom rejected, confirmed mine never removed
+    assert ag.rejected and ag.rejected[0]["id"] == cue.id
+    assert ag.add_mine_contact("mag", (100.0, -50.0), 3.0, 5.0, 0.3, 3.0).confirmed is False  # weak alone never confirms
+
+
+def test_no_livelock_when_nothing_is_doable_after_coverage(P):
+    o = Orchestrator(P, engine="fsm")
+    blocked = _cas("C9", (100.0, 0.0), Start.DELAYED)
+    zone = Zone("ZM1", Cls.MINE, (100.0, 0.0), 15.0)  # casualty unreachable (inside a mine zone)
+    o.state.update(phase=Phase.EXPLORE, explore_idx=len(o.brain.lanes), coverage=0.99, casualties=[blocked], zones=[zone])
+    phases = []
+    for k in range(30):
+        s = o.tick({"t": 1.0 + 0.1 * k, "armed": True, "pos": (50.0, 20.0, 25.0), "battery_wh": 12.0,  # low: survey not allowed
+                    "casualties": [blocked], "zones": [zone]})
+        phases.append(s["phase"])
+    assert phases[-1] == Phase.RETURN_BASE
+    changes = sum(1 for a, b in zip(phases, phases[1:]) if a != b)
+    assert changes <= 2  # no EXPLORE <-> TRIAGE ping-pong
+
+
+def test_rth_energy_follows_the_detour_home(P):
+    from skyforge_core.planning.agent import PlannerAgent
+
+    ag = PlannerAgent(P)
+    wall = [Zone(f"ZW{i}", Cls.MINE, (60.0, -30.0 + 15.0 * i), 14.0) for i in range(5)]  # wall between drone and home
+    s = {"t": 0.0, "pos": (120.0, 0.0, 25.0), "zones": wall, "manual_zones": [], "wind": (0, 0), "gnss_ok": True}
+    _, e_detour = ag.rth(s)
+    _, e_free = PlannerAgent(P).rth({**s, "zones": []})
+    fixed = ag.energy.land_wh + ag.energy.reserve_wh
+    assert (e_detour - fixed) > 1.15 * (e_free - fixed)  # the flight leg around the zones costs clearly more

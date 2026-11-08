@@ -182,7 +182,8 @@ def install():
     pkg("visualization_msgs.msg", Marker=marker, MarkerArray=msg_type("MarkerArray", markers=[]))
     pkg("nav_msgs.msg", Odometry=msg_type("Odometry"), Path=msg_type("Path", poses=[]))
     pkg("sensor_msgs.msg", BatteryState=msg_type("BatteryState", percentage=1.0, charge=0.0, capacity=0.0, cell_voltage=[]),
-        CameraInfo=msg_type("CameraInfo"), NavSatFix=msg_type("NavSatFix"), Image=msg_type("Image"))
+        CameraInfo=msg_type("CameraInfo"), NavSatFix=msg_type("NavSatFix"), Image=msg_type("Image"),
+        MagneticField=msg_type("MagneticField"))
     pkg("skyforge_interfaces.msg",
         Detection=msg_type("Detection"), DetectionArray=msg_type("DetectionArray", detections=[]),
         Track=msg_type("Track"), TrackArray=msg_type("TrackArray", tracks=[]),

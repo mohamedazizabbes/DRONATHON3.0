@@ -28,6 +28,7 @@ setup(
             "fault_injector = skyforge_ros.fault_injector:main",
             "vision_node = skyforge_ros.vision_node:main",
             "viz_node = skyforge_ros.viz_node:main",
+            "obstacle_relay = skyforge_ros.obstacle_relay:main",
         ],
     },
 )

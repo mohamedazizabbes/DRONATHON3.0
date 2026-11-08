@@ -37,6 +37,8 @@ class GroundStation:
         self.last_goal_bytes: Optional[bytes] = None
         self.stats = {"rx": 0, "dup": 0, "forged": 0, "gaps": 0, "frags": 0}
         self._echo = None  # (sender ts, local receive time) of the newest message, for RTT
+        self._last_rx_t = None
+        self._backlog_since = None
 
     # ---------------------------------------------------------------- rx
     def on_receive(self, data: bytes, now: float) -> None:
@@ -46,6 +48,10 @@ class GroundStation:
             self.stats["forged"] += 1
             return
         self.stats["rx"] += 1
+        # outage = silence > 2 s; resync = first message after it -> backlog drained (contiguous + fresh)
+        if self._last_rx_t is not None and now - self._last_rx_t > 2.0 and self._backlog_since is None:
+            self._backlog_since = now
+        self._last_rx_t = now
         b, seq = msg["b"], int(msg["seq"])
         if b != self.drone_b:
             self.drone_b, self.contig, self.max_seen, self.received = b, seq - 1, seq - 1, set()
@@ -70,6 +76,11 @@ class GroundStation:
             self.resync_times.append(now - self._gap_since)
             self.logs.append({"ts": now, "type": "resync", "msg": f"resynced in {now - self._gap_since:.2f}s"})
             self._gap_since = None
+        if (self._backlog_since is not None and self._gap_since is None and self.contig == self.max_seen
+                and now - float(msg.get("ts", now)) < 1.0):
+            self.resync_times.append(now - self._backlog_since)
+            self.logs.append({"ts": now, "type": "resync", "msg": f"backlog drained in {now - self._backlog_since:.2f}s"})
+            self._backlog_since = None
         self._handle(msg, now)
 
     def _handle(self, msg: dict, now: float) -> None:

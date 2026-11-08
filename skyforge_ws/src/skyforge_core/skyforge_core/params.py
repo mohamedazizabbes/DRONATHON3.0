@@ -18,6 +18,8 @@ DEFAULTS: dict[str, Any] = {
         "delivery_alt": 5.0,
         "delivery_radius": 1.5,  # F7: track must be within this of the drop point
         "delivery_max_retries": 3,
+        "delivery_rounds": 3,  # paused deliveries are retried up to this many rounds before giving up
+        "delivery_cooldown_s": 30.0,
         "release_offset_m": 1.0,  # estimated offset required to release (spec radius 1.5)
         "release_max_speed": 0.6,  # m/s relative to the casualty
         "takeoff_tol": 1.0,
@@ -27,7 +29,9 @@ DEFAULTS: dict[str, Any] = {
         # hybrid: only casualties with urgency >= preempt_urgency interrupt exploration
         "triage_policy": "hybrid",
         "preempt_urgency": 0.95,
+        "rescue_energy_margin": 1.8,  # serve pending casualties when battery < this x their gate energy
         "kits": 4,  # medical kits on board
+        "serve_deceased": False,  # never spend a kit on a casualty flagged likely deceased (reported to the station)
         "coverage_target": 0.97,
         "switch_hysteresis": 1.25,  # new target must beat current score by this factor
         "duplicate_radius_m": 6.0,  # + 2 sigma: candidate on a served casualty = same person
@@ -35,6 +39,7 @@ DEFAULTS: dict[str, Any] = {
         "duplicate_max_floating_m": 45.0,  # drifting: identity gate grows with uncertainty
         "release_confirm_ticks": 3,  # release condition must hold this many decision ticks
         "lost_target_search_s": 25.0,
+        "assess_hover_s": 10.0,  # EXPECTANT target: hover at delivery altitude to assess breathing before release
     },
     "camera": {
         "width": 640,
@@ -50,11 +55,15 @@ DEFAULTS: dict[str, Any] = {
         "gate_m": 3.0,
         "gate_sigma_k": 2.0,
         "gate_max_m": 8.0,  # association gate never exceeds this (no track swallows a neighbour)
+        "gate_min_m": 0.8,
+        "gate_per_alt": 0.12,  # minimum gate = clamp(0.12 * altitude, 0.8, gate_m)
+        "confirm_min_conf": {"injured": 0.4, "hostile_unit": 0.35},  # mean detector confidence to confirm
         # re-identification of STALE confirmed tracks (not seen for reid_stale_s):
         # gate = min(reid_max_m, 3 sigma + reid_base_m). Drifting casualties keep their id.
         "reid_stale_s": 5.0,
         "reid_base_m": 6.0,
         "reid_max_m": 25.0,
+        "reid_max_floating_m": 90.0,  # drifting objects: gate grows with uncertainty up to this
         "confirm_hits": 3,
         "confirm_window": 5,
         "delete_after_misses": 4,  # unconfirmed tracks only
@@ -73,6 +82,8 @@ DEFAULTS: dict[str, Any] = {
         "motion_window_s": 15.0,
         "motion_thresh_m": 0.8,
         "mine_proximity_m": 20.0,
+        "deceased_delta_k": 2.0,  # skin within this of ambient ...
+        "deceased_obs_s": 8.0,  # ... and no breathing seen for this long (close range) -> likely deceased
         "slow_radius_m": 25.0,
     },
     "drift": {
@@ -80,15 +91,17 @@ DEFAULTS: dict[str, Any] = {
         "k_leeway": 0.03,  # fraction of wind speed, downwind
         "q_pos": 0.02,
         "q_vel": 0.0001,
-        "max_speed_dev": 0.15,
-        "vel_sigma_floor": 0.03,  # honest drift-velocity uncertainty: sigma grows with time unseen
+        "max_speed_dev": 0.3,
+        "vel_sigma_floor": 0.08,  # honest drift-velocity uncertainty: sigma grows with time unseen
         "meas_sigma_floor": 0.8,  # floating targets: per-detection position noise floor, m  # |v - drift prior| clamp for floating tracks, m/s
         "r_meas": 1.0,
         "max_sigma": 30.0,
+        "sea_tau_s": 30.0,  # time constant of the online current estimate
         "vel_sigma0": 0.1,  # prior drift velocity uncertainty, m/s
     },
     "zones": {
         "safety": {"mine": 15.0, "weapon": 10.0, "hostile_unit": 25.0},
+        "safety_submerged_mine": 12.0,  # mines found by magnetometer/sonar (below the surface)
         "sigma_k": 2.0,
         "wind_k": 0.5,  # metres of margin per m/s of wind
         "los_factor": 1.6,  # hostile line-of-sight soft ring = radius * this
@@ -109,6 +122,7 @@ DEFAULTS: dict[str, Any] = {
         "low_vis_extra": 2.0,
         "replan_move_m": 3.0,
         "plan_extra_m": 2.0,  # planning hysteresis on top of the safety margin
+        "evasive_alt": 15.0,  # altitude for waypoints inside a hostile line-of-sight ring
         "search_step": 6.0,
         "search_legs": 8,
         "max_expansions": 60000,
@@ -125,6 +139,7 @@ DEFAULTS: dict[str, Any] = {
         "deliver_wh": 0.8,
         "gust_factor": 1.2,
         "critical_pct": 8.0,
+        "v_air_max": 16.0,  # airframe airspeed limit (strong headwind -> ground speed drops)
     },
     "reflex": {
         "rate_hz": 50.0,
@@ -139,7 +154,8 @@ DEFAULTS: dict[str, Any] = {
         "wind_ff_alpha": 0.05,
         "wind_ff_max": 4.0,
         "stale_plan_s": 1.5,
-        "climb_first_frac": 0.8,  # below this fraction of the target altitude: climb before transit
+        "climb_first_frac": 0.8,
+        "descend_radius_m": 3.0,  # only descend to a lower target within this horizontal distance  # below this fraction of the target altitude: climb before transit
         "boat_horizon_s": 2.0,
     },
     "comm": {
@@ -156,6 +172,10 @@ DEFAULTS: dict[str, Any] = {
         "jam_loss": 1.0,
         "udp": {"drone_port": 14600, "station_port": 14601, "station_host": "127.0.0.1", "drone_host": "127.0.0.1"},
         "http_port": 8080,
+        # The jury provides the ground station (spec section 3). If it cannot sign with our
+        # HMAC key, set "none": unsigned station messages are accepted (forgery protection OFF,
+        # logged loudly) and their keys / command names are normalised.
+        "station_auth": "hmac",
     },
     "health": {
         "motor_sat_level": 0.95,
@@ -174,6 +194,48 @@ DEFAULTS: dict[str, Any] = {
         "fix_timeout_s": 1.0,
         "min_sats": 6,
     },
+    # Mine detection layer 2: magnetometer (MAD)
+    "magnetic": {
+        "enabled": True,
+        "noise_nt": 0.15,  # platform noise (fluxgate on a boom), 1 sigma
+        "k_sigma": 6.0,  # event threshold = k_sigma * noise
+        "bg_tau_s": 60.0,
+        "close_s": 1.0,
+        "fit_radius_m": 35.0,
+        "fit_weight_sigma_m": 20.0,  # Gaussian proximity weight around the anomaly peak
+        "grid_half_m": 30.0,
+        "grid_step_m": 2.0,
+        "max_depth_m": 20.0,
+        "depth_step_m": 2.0,
+        "min_r2": 0.5,
+        "max_samples": 6000,
+        "confirm_conf": 0.6,  # stronger contacts confirm a mine on their own, weaker ones ask for a sonar dip
+        "weapon_attribution_m": 5.0,  # a ferrous anomaly on a known weapon is the weapon, not a mine
+        "confirm_events": 99,  # weak events never confirm by repetition (phantoms): inspection / sonar decide
+        "min_event_conf": 0.25,
+        "cue_ttl_s": 180.0,  # > a confirmation task's timeout, so a cue never expires mid-task  # an unconfirmed magnetic / sonar cue expires after this without new evidence
+        "inspect": True,  # land contacts (no sonar): low magnetic inspection beside the contact
+        "inspect_alt": 10.0,
+        "inspect_dwell_s": 3.0,
+    },
+    # Mine detection layer 3: dipping sonar (winched transducer, drone hovering low over water)
+    "sonar": {
+        "enabled": True,
+        "survey": True,  # sonar stations over water (deep mines invisible to camera and magnetometer)
+        "range_m": 60.0,
+        "station_spacing_m": 95.0,
+        "dip_alt": 3.0,
+        "dwell_s": 4.0,
+        "task_radius_m": 70.0,  # do a pending dip when it is this close to the drone
+        "task_timeout_s": 60.0,
+        "standoff_extra_m": 3.0,
+        "survey_energy_factor": 1.6,  # start a dip / inspection only if battery > this x RTH threshold
+        "confirm_conf": 0.5,
+        "range_sigma_m": 1.0,
+    },
+    # Weather defaults (the jury provides the weather): overridden by PX4's wind estimate
+    # (/skyforge/wind) or by a station {"type": "weather"} goal_update.
+    "weather": {"wind": [0.0, 0.0], "visibility": 1.0},
     "orchestrator": {"engine": "langgraph", "rate_hz": 10.0},
     "logging": {"dir": "runs"},
 }

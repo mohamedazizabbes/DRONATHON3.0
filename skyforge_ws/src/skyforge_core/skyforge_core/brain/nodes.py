@@ -15,42 +15,35 @@ import hashlib
 import math
 from typing import Any, Optional
 
-from ..energy import EnergyModel
 from ..geometry import dist2, segment_clear
 from ..mission_log import event
-from ..planning.astar import GridPlanner
-from ..planning.coverage import CoverageGrid, lawnmower
-from ..planning.intercept import expanding_square, intercept_point, search_step_from_sigma
-from ..planning.triage import score_casualties
-from ..domain import Cls, Phase, PHASE_FR, Track, Zone, zone_from_dict
+from ..planning.agent import PlannerAgent
+from ..planning.intercept import expanding_square, search_step_from_sigma
+from ..domain import Cls, Phase, PHASE_FR, Start, Track, Zone, zone_from_dict
 from .state import DroneState, snapshot
 
 MAX_HOPS = 4
 
 
 class Brain:
-    """Holds the heavy, non-serialisable context (grids, models) for the nodes."""
+    """State machine + interrupt router. Planning decisions are delegated to the
+    PlannerAgent (prioritisation, intercept, paths, energy/RTH)."""
 
     def __init__(self, params: dict):
         self.p = params
         self.mp = params["mission"]
-        self.energy = EnergyModel.from_params(params)
         self.home = tuple(self.mp["home"])
-        self.static_obstacles = [
-            (tuple(o["p"]), float(o["r"]), float(o.get("h", 100.0))) for o in params.get("obstacles", [])
-        ]
-        self._build_area(self.mp["area"])
+        self.agent = PlannerAgent(params)
+        cam = params["camera"]
+        self.hfov = cam["hfov_deg"]
+        self.vfov = math.degrees(2 * math.atan(math.tan(math.radians(self.hfov) / 2) * cam["height"] / cam["width"]))
         self.last_triage = None
 
-    def _build_area(self, area: dict) -> None:
-        self.area = dict(area)
-        cam = self.p["camera"]
-        self.planner = GridPlanner(area, self.p["planner"]["grid_res"], margin=40.0, max_expansions=self.p["planner"]["max_expansions"])
-        self.coverage = CoverageGrid(area, 2.0)
-        self.lanes = lawnmower(area, self.mp["cruise_alt"], cam["hfov_deg"], cam["lane_overlap"], self.home)
-        w, h = cam["width"], cam["height"]
-        self.hfov = cam["hfov_deg"]
-        self.vfov = math.degrees(2 * math.atan(math.tan(math.radians(self.hfov) / 2) * h / w))
+    # views on the agent (kept for readability of the handlers)
+    energy = property(lambda self: self.agent.energy)
+    coverage = property(lambda self: self.agent.coverage)
+    lanes = property(lambda self: self.agent.lanes)
+    area = property(lambda self: self.agent.area)
 
     # ================================================================ helpers
     def _ev(self, s: DroneState, etype: str, msg: str, **kw) -> dict:
@@ -70,78 +63,32 @@ class Brain:
         s["phase"] = new  # visible to the rest of this node
         return {"phase": new, "prev_phase": old, "phase_since": s["t"], "replan": True}
 
-    def margin(self, s: DroneState) -> float:
-        pp, zp = self.p["planner"], self.p["zones"]
-        wind = math.hypot(*s.get("wind", (0.0, 0.0)))
-        m = pp["drone_radius"] + pp["safety_margin"] + pp["wind_margin_k"] * wind
-        if s.get("visibility", 1.0) < 0.5:
-            m += pp["low_vis_extra"]
-        if not s.get("gnss_ok", True):
-            m += zp["gnss_lost_extra"]
-        return m
+    def margin(self, s):
+        return self.agent.margin(s)
 
-    def all_zones(self, s: DroneState) -> list[Zone]:
-        return list(s.get("zones", [])) + list(s.get("manual_zones", []))
+    def all_zones(self, s):
+        return self.agent.all_zones(s)
 
-    def hard_circles(self, s: DroneState, extra: float = 0.0) -> list:
-        """Inflated hard circles. The planner adds `plan_extra_m` (hysteresis) so a
-        zone that drifts or grows slightly does not invalidate the path at once."""
-        m = self.margin(s) + extra
-        circles = [(z.center, z.radius + m) for z in self.all_zones(s)]
-        alt = self.mp["cruise_alt"]
-        circles += [(c, r + m) for c, r, h in self.static_obstacles if h >= alt - 5.0]
-        return circles
+    def hard_circles(self, s, extra: float = 0.0):
+        return self.agent.hard_circles(s, extra)
 
-    def soft_circles(self, s: DroneState) -> list:
-        k = self.p["zones"]["los_cost"]
-        return [(z.center, z.soft_radius, k) for z in self.all_zones(s) if z.soft_radius > z.radius]
+    def soft_circles(self, s):
+        return self.agent.soft_circles(s)
 
-    def in_zone(self, s: DroneState, p) -> bool:
-        return any(dist2(p, c) < r for c, r in self.hard_circles(s))
+    def in_zone(self, s, p) -> bool:
+        return self.agent.in_zone(s, p)
 
-    def pending(self, s: DroneState) -> list[Track]:
-        done = set(s.get("served_ids", [])) | set(s.get("failed_ids", []))
-        return [t for t in s.get("casualties", []) if t.id not in done]
+    def pending(self, s):
+        return self.agent.pending(s)
 
-    def vg(self, s: DroneState, toward) -> float:
-        pos = s["pos"]
-        d = dist2(pos, toward)
-        if d < 1e-3:
-            return self.mp["cruise_speed"]
-        u = ((toward[0] - pos[0]) / d, (toward[1] - pos[1]) / d)
-        return self.energy.ground_speed(u, self.mp["cruise_speed"], s.get("wind", (0, 0)))
+    def intercept(self, s, t):
+        return self.agent.intercept(s, t)
 
-    def intercept(self, s: DroneState, t: Track):
-        if not t.floating:
-            return t.pos
-        return intercept_point(s["pos"], t.pos, t.vel, self.vg(s, t.pos))
+    def duplicate_of(self, s, t):
+        return self.agent.duplicate_of(s, t)
 
-    def duplicate_of(self, s: DroneState, t: Track) -> Optional[str]:
-        """Served casualty this track probably is (re-detection after drift)."""
-        served = set(s.get("served_ids", []))
-        for o in s.get("casualties", []):
-            # a land casualty can never be a drifted floater (and vice versa)
-            if o.id in served and o.id != t.id and o.floating == t.floating:
-                if o.floating:
-                    r = min(self.mp["duplicate_radius_m"] + 3.0 * max(o.sigma, t.sigma), self.mp["duplicate_max_floating_m"])
-                else:
-                    r = min(self.mp["duplicate_radius_m"] + 2.0 * max(o.sigma, t.sigma), self.mp["duplicate_max_m"])
-                if dist2(o.pos, t.pos) <= r:
-                    return o.id
-        return None
-
-    def triage(self, s: DroneState, only_urgent: bool = False):
-        a = self.area
-        cands = [t for t in self.pending(s) if self.duplicate_of(s, t) is None]
-        if only_urgent:
-            cands = [t for t in cands if t.urgency >= self.mp["preempt_urgency"]]
-        d_max = math.hypot(a["xmax"] - a["xmin"], a["ymax"] - a["ymin"])
-        return score_casualties(
-            cands, s["pos"], self.home, self.energy, s["battery_wh"], s.get("wind", (0, 0)),
-            self.mp["cruise_speed"], d_max, s.get("gnss_ok", True),
-            intercept_fn=lambda t: self.intercept(s, t),
-            blocked_fn=lambda p: self.in_zone(s, p),
-        )
+    def triage(self, s, only_urgent: bool = False):
+        return self.agent.triage(s, only_urgent)
 
     def _triage_sig(self, s: DroneState) -> str:
         items = sorted((t.id, t.category.value if hasattr(t.category, "value") else str(t.category)) for t in self.pending(s))
@@ -162,9 +109,14 @@ class Brain:
         sig = self._zones_sig(s)
         if sig != s.get("zones_sig"):
             self.coverage.set_blocked([(c, r) for c, r in self.hard_circles(s)])
-        thr = self.energy.rth_threshold(pos, self.home, self.mp["cruise_speed"], s.get("wind", (0, 0)), s.get("gnss_ok", True))
-        e_rth = self.energy.e_rth(pos, self.home, self.mp["cruise_speed"], s.get("wind", (0, 0)))
+        ev = []
+        scale = self.agent.calibrate_energy(s)
+        if scale is not None and abs(scale - s.get("energy_scale", 1.0)) > 0.03:
+            ev.append(self._ev(s, "energy", f"power model recalibrated from battery drain: x{scale:.2f}", scale=round(scale, 3)))
+        thr, e_rth = self.agent.rth(s)
         return {
+            "events": ev,
+            "energy_scale": self.energy.scale,
             "coverage": self.coverage.fraction(),
             "rth_threshold_wh": thr,
             "e_rth_wh": e_rth,
@@ -254,7 +206,7 @@ class Brain:
         for g in s["goal_updates"]:
             typ = g.get("type")
             recv = g.get("_recv_t", s["t"])
-            if locked and typ not in ("zone_add", "zone_clear", "rtb"):
+            if locked and typ not in ("zone_add", "zone_clear", "rtb", "weather"):
                 ev.append(self._ev(s, "goal", f"goal_update {typ} refused: safety lock ({s['phase'].value}, {s.get('rth_reason')})",
                                    goal=typ, refused=True, seq=g.get("_seq")))
                 continue
@@ -265,7 +217,7 @@ class Brain:
                 u.update(self._transition(s, Phase.EXPLORE, f"goal_update goto {p}", ev))
                 u["target"] = None
             elif typ == "area":
-                self._build_area(g["area"])
+                self.agent.build_area(g["area"])
                 u["explore_idx"] = 0
                 u.update(self._transition(s, Phase.EXPLORE, "goal_update new area", ev))
             elif typ == "rtb":
@@ -279,6 +231,8 @@ class Brain:
                 manual = [m for m in manual if m.id != z.id] + [z]
             elif typ == "zone_clear":
                 manual = [m for m in manual if m.id != g.get("id")]
+            elif typ == "weather":  # jury weather; the ROS node also republishes it on /skyforge/wind
+                ev.append(self._ev(s, "goal", f"weather update: wind {g.get('wind')} visibility {g.get('visibility')}"))
             elif typ == "priority":
                 u["priority_id"] = g.get("id")
                 s["priority_id"] = g.get("id")
@@ -306,8 +260,27 @@ class Brain:
         u["events"] = ev
         return u
 
+    def _policy(self, s: DroneState) -> str:
+        """Effective triage policy. A MAYDAY handover drone serves the casualties it
+        inherited immediately (they already waited), whatever the configured policy."""
+        return "immediate" if s.get("handover") else self.mp["triage_policy"]
+
+    def _urgent_only(self, s: DroneState) -> bool:
+        return self._exploring_left(s) and self._policy(s) == "hybrid" and not self._energy_rescue(s)
+
+    def _energy_rescue(self, s: DroneState) -> bool:
+        """People before coverage: when the battery approaches what serving the best pending
+        casualty (and coming home) costs, stop exploring / surveying and serve now."""
+        res = self.triage(s)
+        if res.best is None:
+            return False
+        need = self.energy.factor(s.get("gnss_ok", True)) * res.best.energy_wh
+        return s["battery_wh"] < self.mp["rescue_energy_margin"] * need
+
     def _preempt_needed(self, s: DroneState) -> bool:
-        policy = self.mp["triage_policy"]
+        if self.pending(s) and self._energy_rescue(s):
+            return True
+        policy = self._policy(s)
         pend = self.pending(s)
         if not pend:
             return False
@@ -327,11 +300,10 @@ class Brain:
         # Re-enter triage when a pending casualty (newly) qualifies, e.g. its
         # category was upgraded to IMMEDIATE after 10 s immobile.
         sig = self._triage_sig(s)
-        if self._preempt_needed(s) and (sig != s.get("triage_sig") or s["t"] - s.get("triage_t", -1e9) > 10.0):
+        if s.get("station_goal") is None and self._preempt_needed(s) and (sig != s.get("triage_sig") or s["t"] - s.get("triage_t", -1e9) > 10.0):
             # quiet feasibility check first: only leave exploration for a casualty we can serve
-            only = self.mp["triage_policy"] == "hybrid"
-            if self.triage(s, only_urgent=only).best is not None:
-                u.update(self._transition(s, Phase.TRIAGE, "casualty pending (policy %s)" % self.mp["triage_policy"], ev))
+            if self.triage(s, only_urgent=self._urgent_only(s)).best is not None:
+                u.update(self._transition(s, Phase.TRIAGE, "casualty pending (policy %s)" % self._policy(s), ev))
                 u["events"] = ev
                 return u
             u["triage_sig"], u["triage_t"] = sig, s["t"]
@@ -346,6 +318,12 @@ class Brain:
                 u["events"] = ev
                 return u
 
+        sonar = self._sonar_step(s, ev, u, coverage_done=False)
+        if sonar is not None:
+            u["current_goal"] = sonar
+            u["events"] = ev
+            return u
+
         idx = s.get("explore_idx", 0)
         circles = self.hard_circles(s)
         while idx < len(self.lanes):
@@ -359,8 +337,14 @@ class Brain:
                 break
         u["explore_idx"] = idx
         if idx >= len(self.lanes) or s.get("coverage", 0.0) >= self.mp["coverage_target"]:
+            # people first: serve pending casualties before the remaining survey dips
+            sonar = None if self.triage(s).best is not None else self._sonar_step(s, ev, u, coverage_done=True)
+            if sonar is not None:
+                u["current_goal"] = sonar
+                u["events"] = ev
+                return u
             why = f"coverage {100 * s.get('coverage', 0):.0f}% complete"
-            if self.pending(s):
+            if self.pending(s) and self.triage(s).best is not None:
                 u.update(self._transition(s, Phase.TRIAGE, why + ", casualties pending", ev))
             else:
                 u.update(self._transition(s, Phase.RETURN_BASE, why + ", nobody left to serve", ev))
@@ -369,6 +353,115 @@ class Brain:
             u["current_goal"] = self._goal("explore", self.lanes[idx], self.mp["cruise_alt"], idx=idx)
         u["events"] = ev
         return u
+
+    # ------------------------------------------------ mine layer 3: dipping sonar
+    def _sonar_tasks(self, s: DroneState) -> list[dict]:
+        sp = self.p["sonar"]
+        if not sp["enabled"]:
+            return []
+        done = set(s.get("sonar_done", []))
+        tasks = [{"id": f"S{i}", "p": p, "why": "survey station"} for i, p in enumerate(self.agent.sonar_stations) if f"S{i}" not in done]
+        for rid, p in s.get("sonar_requests", []):
+            if f"R{rid}" not in done:
+                tasks.append({"id": f"R{rid}", "p": tuple(p), "why": f"confirm magnetic contact {rid}", "contact": tuple(p)})
+        if self.p["magnetic"].get("inspect", True):
+            for rid, p in s.get("mag_requests", []):
+                if f"G{rid}" not in done:
+                    tasks.append({"id": f"G{rid}", "p": tuple(p), "why": f"magnetic inspection of land contact {rid}",
+                                  "contact": tuple(p), "kind": "mag", "track": rid})
+        return tasks
+
+    def _task_point(self, s: DroneState, t: dict):
+        """Standoff for a survey task. Requests around a TENTATIVE contact (no zone yet) never
+        go above it: ring of radius submerged-mine safety + margin, on the drone's side."""
+        sp = self.p["sonar"]
+        tgt = t.get("contact")
+        if tgt is None:
+            return self.agent.standoff(s, t["target"] if "target" in t else t["p"], sp["standoff_extra_m"])
+        R = self.p["zones"]["safety_submerged_mine"] + self.agent.margin(s) + sp["standoff_extra_m"]
+        d = dist2(s["pos"], tgt)
+        ux, uy = ((s["pos"][0] - tgt[0]) / d, (s["pos"][1] - tgt[1]) / d) if d > 1e-3 else (1.0, 0.0)
+        return self.agent.standoff(s, (tgt[0] + ux * R, tgt[1] + uy * R), sp["standoff_extra_m"])
+
+    def _task_alt(self, t: dict) -> float:
+        return self.p["magnetic"]["inspect_alt"] if t.get("kind") == "mag" else self.p["sonar"]["dip_alt"]
+
+    def _survey_startable(self, s: DroneState) -> bool:
+        """A pending / active survey task that the drone can actually fly now (energy + standoff)."""
+        sp = self.p["sonar"]
+        if not sp["enabled"]:
+            return False
+        if s.get("sonar_active"):
+            return True
+        if s["battery_wh"] < sp["survey_energy_factor"] * s.get("rth_threshold_wh", 0.0):
+            return False
+        return any(self._task_point(s, t) is not None for t in self._sonar_tasks(s))
+
+    def _sonar_step(self, s: DroneState, ev: list, u: dict, coverage_done: bool) -> Optional[dict]:
+        """Run / pick a dipping-sonar task. Returns the goal to fly, or None."""
+        sp = self.p["sonar"]
+        if not sp["enabled"]:
+            return None
+        act = s.get("sonar_active")
+        done = list(s.get("sonar_done", []))
+        if act is not None and s["t"] - act.get("last_t", act["t0"]) > 1.0:
+            # the task was interrupted (e.g. an IMMEDIATE casualty): its timeout restarts on resume
+            act = {**act, "t0": s["t"], "dwell_t": None}
+        if act is not None:
+            act = {**act, "last_t": s["t"]}
+        if act is not None and act.get("dwell_t") is None and self.agent.in_zone(s, act["p"]):
+            # zones move (drifting mines): re-derive the standoff from the original target
+            stand = self._task_point(s, act)
+            if stand is None:
+                ev.append(self._ev(s, "dec", f"sonar task {act['id']} skipped: no safe standoff any more", decision="sonar_skip"))
+                u["sonar_done"], u["sonar_active"] = done + [act["id"]], None
+                return None
+            act = {**act, "p": stand}
+            ev.append(self._ev(s, "dec", f"sonar task {act['id']}: standoff moved to ({stand[0]:.0f},{stand[1]:.0f}) (zone moved)",
+                               decision="sonar_task"))
+        if act is not None:
+            near = dist2(s["pos"], act["p"]) <= 2.5 and s["pos"][2] <= self._task_alt(act) + 0.8
+            if near and act.get("dwell_t") is None:
+                act = {**act, "dwell_t": s["t"]}
+            dwell = self.p["magnetic"]["inspect_dwell_s"] if act.get("kind") == "mag" else sp["dwell_s"]
+            if act.get("dwell_t") is not None and not near:
+                act = {**act, "dwell_t": None}  # drifted off the task point: dwell restarts
+            if act.get("dwell_t") is not None and s["t"] - act["dwell_t"] >= dwell:
+                if act.get("kind") == "mag":
+                    u["actions"] = list(s.get("actions", [])) + [{"type": "mag_inspect", "task": act["id"], "track": act["track"]}]
+                    ev.append(self._ev(s, "dec", f"MAG inspection {act['id']} ({act['why']}) at {self._task_alt(act):.0f} m: re-invert",
+                                       decision="mag_inspect", task=act["id"]))
+                else:
+                    u["actions"] = list(s.get("actions", [])) + [{"type": "sonar_ping", "task": act["id"], "p": tuple(s["pos"][:2])}]
+                    ev.append(self._ev(s, "dec", f"SONAR dip {act['id']} ({act['why']}) at ({s['pos'][0]:.0f},{s['pos'][1]:.0f}): ping",
+                                       decision="sonar", task=act["id"]))
+                u["sonar_done"], u["sonar_active"] = done + [act["id"]], None
+                return None
+            if s["t"] - act["t0"] > sp["task_timeout_s"]:
+                ev.append(self._ev(s, "dec", f"sonar task {act['id']} skipped (timeout)", decision="sonar_skip"))
+                u["sonar_done"], u["sonar_active"] = done + [act["id"]], None
+                return None
+            u["sonar_active"] = act
+            return self._goal("sonar_dip", act["p"], self._task_alt(act), id=act["id"])
+        # survey work only with a comfortable energy margin (rescue and return come first)
+        if s["battery_wh"] < sp["survey_energy_factor"] * s.get("rth_threshold_wh", 0.0):
+            return None
+        best = None
+        for t in self._sonar_tasks(s):
+            stand = self._task_point(s, t)
+            if stand is None:
+                continue
+            d = dist2(s["pos"], stand)
+            if (coverage_done or d <= sp["task_radius_m"]) and (best is None or d < best[0]):
+                best = (d, {**t, "target": t["p"], "p": stand})  # keep the original station / contact
+        if best is None:
+            return None
+        act = {**best[1], "t0": s["t"], "dwell_t": None}
+        ev.append(self._ev(s, "dec", f"{'MAG' if act.get('kind') == 'mag' else 'SONAR'} task {act['id']}: {act['why']}, "
+                                     f"standoff ({act['p'][0]:.0f},{act['p'][1]:.0f})",
+                           decision="sonar_task", task=act["id"]))
+        u["sonar_active"] = act
+        return self._goal("sonar_dip", act["p"], self._task_alt(act), id=act["id"])
 
     def h_detect(self, s: DroneState) -> dict:
         ev: list = []
@@ -392,7 +485,8 @@ class Brain:
         dups = [(a, b) for a, b in dups if b]
         if dups:
             for a, b in dups:
-                ev.append(self._ev(s, "dec", f"{a} is a re-detection of served {b}: no second kit", decision="duplicate"))
+                why = "seen with a delivered kit (IR strobe)" if b == "kit-marked" else f"re-detection of served {b}"
+                ev.append(self._ev(s, "dec", f"{a}: {why}, no second kit", decision="duplicate"))
             u["served_ids"] = list(s.get("served_ids", [])) + [a for a, _ in dups]
             s["served_ids"] = u["served_ids"]
         if s.get("kits", 0) <= 0:
@@ -400,7 +494,7 @@ class Brain:
             u["rth_reason"] = "payload_empty"
             u["events"] = ev
             return u
-        res = self.triage(s, only_urgent=self._exploring_left(s) and self.mp["triage_policy"] == "hybrid")
+        res = self.triage(s, only_urgent=self._urgent_only(s))
         self.last_triage = res
         best = res.best
         pid = s.get("priority_id")
@@ -420,7 +514,7 @@ class Brain:
         if best is not None:
             u["target"] = {"id": best.id, "score": best.score, "point": best.target, "retries": 0,
                            "search": None, "search_t": None, "low_t": None,
-                           "urgent_only": self._exploring_left(s) and self.mp["triage_policy"] == "hybrid"}
+                           "urgent_only": self._urgent_only(s)}
             u.update(self._transition(s, Phase.NAVIGATE, f"best feasible target {best.id}", ev))
         else:
             u["target"] = None
@@ -429,8 +523,12 @@ class Brain:
                 u.update(self._transition(s, Phase.EXPLORE, f"{why}, area left", ev))
             else:
                 why = "none feasible" if res.ranked else "no casualty pending"
-                u.update(self._transition(s, Phase.RETURN_BASE, f"{why}, coverage complete", ev))
-                u["rth_reason"] = "mission_complete"
+                if self._survey_startable(s):
+                    # finish pending sonar dips / magnetic inspections before going home
+                    u.update(self._transition(s, Phase.EXPLORE, f"{why}, coverage complete, survey tasks pending", ev))
+                else:
+                    u.update(self._transition(s, Phase.RETURN_BASE, f"{why}, coverage complete", ev))
+                    u["rth_reason"] = "mission_complete"
         u["events"] = ev
         return u
 
@@ -454,7 +552,7 @@ class Brain:
             return u
 
         # Pre-emption with hysteresis: a much better casualty appeared.
-        res = self.triage(s, only_urgent=self._exploring_left(s) and self.mp["triage_policy"] == "hybrid"
+        res = self.triage(s, only_urgent=self._urgent_only(s)
                           and tgt.get("urgent_only", False))
         if res.best and res.best.id != tgt["id"] and res.best.score > tgt["score"] * self.mp["switch_hysteresis"]:
             ev.append(self._ev(s, "dec", f"switch target {tgt['id']} -> {res.best.id} (S {tgt['score']:.2f} -> {res.best.score:.2f})",
@@ -500,7 +598,7 @@ class Brain:
                     return u
         elif near < 4.0 and seen_age > 4.0:
             step = search_step_from_sigma(tr.sigma, self.p["planner"]["search_step"])
-            tgt["search"] = expanding_square(point, step, self.p["planner"]["search_legs"])[1:]
+            tgt["search"] = [q for q in expanding_square(point, step, self.p["planner"]["search_legs"])[1:] if not self.in_zone(s, q)]
             tgt["search_t"] = s["t"]
             ev.append(self._ev(s, "dec", f"{tr.id} not at predicted point, expanding-square search (step {step:.0f}m)",
                                decision="search"))
@@ -522,12 +620,23 @@ class Brain:
             u["events"] = ev
             return u
         alt = self.mp["delivery_alt"]
-        point = self.intercept(s, tr)
+        lead = 1.0 / max(self.p["reflex"]["kp_pos"], 0.1)
+        point = (tr.pos[0] + tr.vel[0] * lead, tr.pos[1] + tr.vel[1] * lead)
         u["current_goal"] = self._goal("deliver", point, alt, id=tr.id)
         z = s["pos"][2]
+        if tr.attrs.get("likely_deceased"):
+            ev.append(self._ev(s, "dec", f"{tr.id} assessed LIKELY DECEASED ({tr.attrs.get('category_why', 'FLIR')}): "
+                                         f"kit kept for the living, position reported for recovery",
+                               decision="deceased", id=tr.id, pos=[round(tr.pos[0], 1), round(tr.pos[1], 1)]))
+            u["failed_ids"] = list(s.get("failed_ids", [])) + [tr.id]
+            u["target"] = None
+            u.update(self._transition(s, Phase.TRIAGE, "likely deceased, no kit", ev))
+            u["events"] = ev
+            return u
         if z <= alt + 0.8:
             if tgt.get("low_t") is None:
                 tgt["low_t"] = s["t"]
+            assessing = tr.category == Start.EXPECTANT and s["t"] - tgt["low_t"] < self.mp["assess_hover_s"]
             err = dist2(s["pos"], tr.pos)
             fresh = (s["t"] - tr.last_seen) <= 1.5
             v = s.get("vel", (0.0, 0.0, 0.0))
@@ -537,7 +646,7 @@ class Brain:
             nav_ok = s.get("gnss_ok", True)
             cond = err + 0.5 * tr.sigma <= self.mp["release_offset_m"] and fresh and steady and nav_ok
             tgt["ok_ticks"] = tgt.get("ok_ticks", 0) + 1 if cond else 0
-            if cond and tgt["ok_ticks"] >= self.mp["release_confirm_ticks"]:
+            if cond and not assessing and tgt["ok_ticks"] >= self.mp["release_confirm_ticks"]:
                 kits = s.get("kits", 0) - 1
                 ev.append(self._ev(
                     s, "dec", f"DELIVERY to {tr.id} ({tr.category.value}): offset {err:.2f}m <= {self.mp['delivery_radius']}m, kits left {kits}",
@@ -550,7 +659,7 @@ class Brain:
                 u.update(self._transition(s, Phase.TRIAGE, "kit released", ev))
                 u["events"] = ev
                 return u
-            if s["t"] - tgt["low_t"] > 6.0:
+            if s["t"] - tgt["low_t"] > 6.0 + (self.mp["assess_hover_s"] if tr.category == Start.EXPECTANT else 0.0):
                 tgt["retries"] = tgt.get("retries", 0) + 1
                 tgt["low_t"] = None
                 why = (f"track not seen for {s['t'] - tr.last_seen:.1f}s" if not fresh
@@ -558,8 +667,18 @@ class Brain:
                        else f"offset {err:.1f}m (+0.5 sigma {0.5 * tr.sigma:.1f})" if err + 0.5 * tr.sigma > self.mp["release_offset_m"]
                        else "not steady")
                 if tgt["retries"] >= self.mp["delivery_max_retries"]:
-                    ev.append(self._ev(s, "dec", f"delivery to {tr.id} aborted after {tgt['retries']} tries ({why})", decision="abort"))
-                    u["failed_ids"] = list(s.get("failed_ids", [])) + [tr.id]
+                    rounds = dict(s.get("abort_rounds", {}))
+                    rounds[tr.id] = rounds.get(tr.id, 0) + 1
+                    u["abort_rounds"] = rounds
+                    if rounds[tr.id] >= self.mp["delivery_rounds"]:
+                        ev.append(self._ev(s, "dec", f"delivery to {tr.id} given up after {rounds[tr.id]} rounds ({why})", decision="abort"))
+                        u["failed_ids"] = list(s.get("failed_ids", [])) + [tr.id]
+                    else:
+                        retry = dict(s.get("retry_after", {}))
+                        retry[tr.id] = s["t"] + self.mp["delivery_cooldown_s"]
+                        u["retry_after"] = retry
+                        ev.append(self._ev(s, "dec", f"delivery to {tr.id} paused ({why}); retry in {self.mp['delivery_cooldown_s']:.0f}s "
+                                                     f"(round {rounds[tr.id]}/{self.mp['delivery_rounds']})", decision="abort"))
                     u["target"] = None
                     u.update(self._transition(s, Phase.TRIAGE, "delivery not confirmed", ev))
                     u["events"] = ev
@@ -635,22 +754,14 @@ class Brain:
         moved = prev is None or dist2(prev, gp) > self.p["planner"]["replan_move_m"] or abs(prev[2] - gp[2]) > 0.5
         if not (moved or s.get("replan") or not s.get("waypoints")):
             return {"events": []}
+        if goal["kind"] == "deliver" and dist2(s["pos"], gp) < 15.0:
+            # final approach over a moving casualty: waypoint follows it every tick
+            return {"waypoints": [(gp[0], gp[1], gp[2])], "path_goal": gp, "replan": False, "events": []}
         if goal["kind"] in ("land", "mayday_land", "takeoff"):
             # vertical manoeuvre (land pad / takeoff point): no horizontal planning
             wps = [(gp[0], gp[1], gp[2])]
             return {"waypoints": wps, "path_goal": gp, "replan": False, "events": []}
-        # Tiered planning: hysteresis margin -> nominal margin -> minimum safe
-        # margin (drone radius + 1 m, still a hard constraint). Never leaves
-        # RETURN_BASE without a path when one exists at the minimum margin.
-        pp = self.p["planner"]
-        tiers = [(pp["plan_extra_m"], "hyst"), (0.0, "nominal"), (pp["drone_radius"] + 1.0 - self.margin(s), "min")]
-        res = None
-        for extra, tier in tiers:
-            res = self.planner.plan(s["pos"][:2], goal["p"], self.hard_circles(s, extra), self.soft_circles(s))
-            if res.ok:
-                if tier != "hyst":
-                    res.reason += f"/{tier}-margin"
-                break
+        res = self.agent.plan_path(s, goal["p"])
         if not res.ok:
             ev.append(self._ev(s, "dec", f"no path to {goal['kind']} goal: {res.reason}", decision="no_path", reason=res.reason))
             if goal["kind"] == "explore":
@@ -661,6 +772,13 @@ class Brain:
                 u.update(self._transition(s, Phase.TRIAGE, "target unreachable", ev))
             elif goal["kind"] == "station_goto":
                 u["station_goal"] = None
+            elif goal["kind"] == "search" and s.get("target") and s["target"].get("search"):
+                tgt = dict(s["target"])
+                tgt["search"] = tgt["search"][1:]
+                u["target"] = tgt
+            elif goal["kind"] == "sonar_dip" and s.get("sonar_active"):
+                u["sonar_done"] = list(s.get("sonar_done", [])) + [s["sonar_active"]["id"]]
+                u["sonar_active"] = None
             # hold position meanwhile (the reflex keeps us safe)
             u["waypoints"] = [(s["pos"][0], s["pos"][1], max(s["pos"][2], 2.0))]
             u["path_goal"] = None
@@ -669,8 +787,11 @@ class Brain:
             return u
         cruise = self.mp["cruise_alt"]
         pts = res.path[1:]
-        wps = [(p[0], p[1], cruise) for p in pts[:-1]] + [(pts[-1][0], pts[-1][1], gp[2])]
-        if res.reason != "direct":
+        wps = [(p[0], p[1], self.agent.waypoint_alt(s, p, cruise)) for p in pts[:-1]] + [(pts[-1][0], pts[-1][1], gp[2])]
+        if res.reason.startswith("evasive"):
+            ev.append(self._ev(s, "dec", f"EVASIVE: inside hostile line of sight, exiting radially then {res.reason}",
+                               decision="evasive"))
+        elif res.reason != "direct":
             ev.append(self._ev(s, "plan", f"A* path to {goal['kind']} ({len(wps)} wps, {res.reason})"))
         u.update({"waypoints": wps, "path_goal": gp, "replan": False, "events": ev})
         return u

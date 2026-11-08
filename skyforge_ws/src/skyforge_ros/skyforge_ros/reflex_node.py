@@ -24,7 +24,7 @@ import math
 import time
 
 import rclpy
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, Vector3
 from nav_msgs.msg import Odometry, Path
 from rclpy.node import Node
 from sensor_msgs.msg import BatteryState
@@ -48,7 +48,8 @@ class ReflexNode(Node):
         self.p = node_params(self)
         self.declare_parameter("backend", "px4")
         self.declare_parameter("px4_ns", "/fmu")
-        self.declare_parameter("status_topic", "vehicle_status")  # PX4 1.15; use vehicle_status_v1 with PX4 >= 1.16
+        self.declare_parameter("status_topic", "vehicle_status")
+        self.declare_parameter("wind_topic", "wind")  # PX4 wind estimate (/fmu/out/wind if exported by the XRCE bridge)  # PX4 1.15; use vehicle_status_v1 with PX4 >= 1.16
         self.backend = self.get_parameter("backend").value
         self.ctrl = ReflexController(self.p)
         self.energy = EnergyModel.from_params(self.p)
@@ -118,6 +119,13 @@ class ReflexNode(Node):
         self.create_subscription(BatteryStatus, f"{ns}/out/battery_status", self.on_px4_battery, QOS_PX4)
         st = self.get_parameter("status_topic").value
         self.create_subscription(VehicleStatus, f"{ns}/out/{st}", self.on_px4_status, QOS_PX4)
+        try:  # PX4's EKF wind estimate has priority over the station weather
+            from px4_msgs.msg import Wind
+
+            self.pub_wind = self.create_publisher(Vector3, "/skyforge/wind", 10)
+            self.create_subscription(Wind, f"{ns}/out/{self.get_parameter('wind_topic').value}", self.on_px4_wind, QOS_PX4)
+        except ImportError:
+            pass
 
     def on_px4_odom(self, m):
         self.pos = list(ned_to_enu(m.position))
@@ -126,6 +134,10 @@ class ReflexNode(Node):
         self.vel = list(ned_to_enu(m.velocity))
         self.rpy = quat_ned_frd_to_enu_flu(m.q)
         self._publish_odom()
+
+    def on_px4_wind(self, m):
+        # NED (north, east) -> ENU (east, north)
+        self.pub_wind.publish(Vector3(x=float(m.windspeed_east), y=float(m.windspeed_north), z=0.0))
 
     def on_px4_battery(self, m):
         if m.remaining >= 0:

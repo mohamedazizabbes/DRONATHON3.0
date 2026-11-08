@@ -98,6 +98,12 @@ def test_full_graph_closed_loop(cfg):
         for cb in Bus.subs["/odom"]:
             cb(o)
         k = int(round(t / dt))
+        if k % 5 == 0 and st["pos"][2] > 1.0:  # magnetometer 10 Hz (tesla)
+            b = world.mag_sample(st["pos"]) * 1e-9
+            mf = Auto(magnetic_field=Auto(x=0.0, y=0.0, z=b))
+            mf.header.stamp = Auto(sec=int(t), nanosec=int((t % 1) * 1e9))
+            for cb in Bus.subs["/sensors/mag"]:
+                cb(mf)
         if k % 10 == 0:  # GNSS 5 Hz + camera 5 Hz
             lat0, lon0 = 36.8065, 10.1815
             fix = Auto(latitude=lat0 + math.degrees(st["pos"][1] / 6378137.0),
@@ -132,6 +138,11 @@ def test_full_graph_closed_loop(cfg):
             sent["spoof"] = True
             cmd({"type": "spoof", "dx": 40, "dy": 0, "ramp_s": 8, "dur_s": 20})
 
+    def on_sonar_cmd(m):  # the sonar driver: ping where the drone is, publish contacts
+        cs = world.sonar_ping(st["pos"], cfg["sonar"]["range_m"])
+        for cb in Bus.subs["/sensors/sonar"]:
+            cb(Auto(data=json.dumps({"stamp": Clock.t, "contacts": cs})))
+    Bus.subs["/payload/sonar_cmd"].append(on_sonar_cmd)
     nav_states = []
     Bus.subs["/skyforge/nav"].append(lambda m: nav_states.append(json.loads(m.data)["gnss_ok"]))
     run_timers(260.0, 0.02, hook)
@@ -148,6 +159,13 @@ def test_full_graph_closed_loop(cfg):
     assert gs.stats["rx"] > 50 and gs.detections, "station got no telemetry/detections over UDP"
     assert gs.resync_times, "no resync after the jam"
     assert orch.latency.pct(95) < 100.0
+    # decision-relevant attributes must cross the ROS boundary (Track.attrs_json)
+    from skyforge_ros.conv import msg_to_track, track_to_msg
+    from skyforge_core.domain import Track as CoreTrack
+    rt = msg_to_track(track_to_msg(CoreTrack("C1", "injured", (1.0, 2.0), 1.0, attrs={"likely_deceased": True, "marked": True})))
+    assert rt.attrs["likely_deceased"] and rt.attrs["marked"]
+    sonar_mines = [t for t in nodes[2].agent.tracks() if t.cls == "mine" and "sonar" in t.attrs.get("layers", [])]
+    assert sonar_mines, "no mine contact from the sonar layer through ROS"
     mk = Bus.last.get("/viz/markers")
     assert mk is not None and any(m.ns == "tracks" for m in mk.markers) and any(m.ns == "zones" for m in mk.markers)
     lat = Bus.last.get("/metrics")

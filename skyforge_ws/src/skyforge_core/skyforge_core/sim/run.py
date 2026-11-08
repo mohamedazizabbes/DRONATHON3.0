@@ -19,6 +19,7 @@ import time
 from collections import deque
 from typing import Optional
 
+from ..brain.handover import apply_snapshot
 from ..brain.orchestrator import Orchestrator
 from ..brain.state import snapshot as make_snapshot
 from ..comm.drone_comm import DroneComm
@@ -136,7 +137,8 @@ class DroneUnit:
         self.distance += math.hypot(self.pos[0] - old[0], self.pos[1] - old[1])
         if self.armed and (self.pos[2] > 0.05 or self.orch.state["phase"] == Phase.INIT):
             v_air = math.hypot(self.vel[0] - w[0], self.vel[1] - w[1])
-            p = self.energy.power_w(v_air) * 1.04 + 25.0 * max(0.0, self.vel[2])
+            # the real airframe draws more than the paper power budget: the brain must calibrate online
+            p = self.energy.power_w(v_air) * float(self.world.sc.get("true_power_scale", 1.15)) + 25.0 * max(0.0, self.vel[2])
             self.battery_wh -= p * dt / 3600.0
 
     def motor_outputs(self):
@@ -179,6 +181,8 @@ class MissionSim:
         self.min_clear: dict[str, float] = {}
         self._in_contact: set = set()
         self.goal_reactions: list[float] = []
+        self.hidden_overflights: list[dict] = []
+        self.found_at: dict = {}
         self.pending_handover: Optional[dict] = None
 
     def _new_drone(self, name: str, t0: float) -> DroneUnit:
@@ -296,11 +300,21 @@ class MissionSim:
             d.lat_percep.add(d._last_percep_ms)
         else:
             d.agent.predict(t, self.world.wind)
+        # mine layer 2: magnetometer (boom-mounted, sensor height = drone height)
+        if self.p["magnetic"]["enabled"] and d.pos[2] > 1.0:
+            d.agent.add_mag_sample(t, (pos[0], pos[1], d.pos[2]), self.world.mag_sample(d.pos))
         # health
         fault = d.health.update(t, d.motor_outputs(), t, t, 3.9, 45.0)
         link_up = self.link.is_up(d.pos)
         d.comm.set_link(link_up, t)
         new_tracks = d.agent.pop_new_confirmed()
+        for tr in new_tracks:  # score detection at confirmation time (drifting objects move afterwards)
+            same = [o for o in self.world.objects if o.cls == tr.cls]
+            if same:
+                o = min(same, key=lambda o: dist2(o.p, tr.pos))
+                if dist2(o.p, tr.pos) < 8.0 and o.id not in self.found_at:
+                    self.found_at[o.id] = {"t": round(t, 1), "track": tr.id, "err_m": round(dist2(o.p, tr.pos), 2),
+                                           "layers": list(tr.attrs.get("layers", ["vision"]))}
         goals, d.goals = d.goals, []
         inputs = {
             "t": t, "pos": pos, "vel": tuple(d.vel), "rpy": (0.0, 0.0, d.reflex.yaw), "armed": d.armed,
@@ -308,6 +322,8 @@ class MissionSim:
             "link_up": link_up, "link_quality": self.link.quality(d.pos), "gnss_ok": d.nav.gnss_ok, "nav_source": d.nav.source,
             "wind": tuple(self.world.wind), "visibility": self.world.visibility,
             "casualties": d.agent.casualties(), "zones": d.agent.zones(), "new_tracks": new_tracks, "health_fault": fault,
+            "sonar_requests": d.agent.sonar_requests(),
+            "mag_requests": d.agent.mag_requests(),
         }
         old_wps = st.get("waypoints")
         prev_phase = st["phase"]
@@ -324,7 +340,7 @@ class MissionSim:
         for ev in s.get("events", []):
             if ev["type"] == "goal" and "reaction_ms" in ev:
                 self.goal_reactions.append(ev["reaction_ms"] + s["decision_ms"])
-            if ev["type"] in ("phase", "dec", "det", "goal", "nav", "may", "link"):
+            if ev["type"] in ("phase", "dec", "det", "goal", "nav", "may", "link", "energy"):
                 self.say(f"[{t:7.1f}s] {d.name} {ev['phase']:<11} {ev['msg']}")
             m = event_to_msg(ev)
             if m:
@@ -341,17 +357,30 @@ class MissionSim:
                 self._record_delivery(d, a, t)
             elif a["type"] == "mayday":
                 d.mayday_snapshot = a["snapshot"]
+            elif a["type"] == "sonar_ping":  # mine layer 3
+                contacts = self.world.sonar_ping(d.pos, self.p["sonar"]["range_m"])
+                for tr in d.agent.add_sonar_ping(d.pos[:2], contacts, t):
+                    self.say(f"[{t:7.1f}s] {d.name} SONAR       contact -> {tr.id} depth {tr.attrs.get('depth')} m layers {tr.attrs.get('layers')}")
+            elif a["type"] == "mag_inspect":  # mine layer 2, close range
+                tr = d.agent.mag_reinspect(a["track"], t)
+                if tr is not None:
+                    self.say(f"[{t:7.1f}s] {d.name} MAG         inspection -> {tr.id} confirmed={tr.confirmed} conf {tr.conf:.2f}")
             elif a["type"] == "disarm":
                 d.armed = False
 
     def _record_delivery(self, d: DroneUnit, a: dict, t: float) -> None:
         cas = self.world.truth_of(Cls.INJURED)
         nearest = min(cas, key=lambda o: dist2(o.p, d.pos))
-        err = dist2(nearest.p, d.pos)
+        # a kit dropped next to a floating casualty rides the same wave (wavelength >> 1.5 m):
+        # score against the drift (wave-mean) position for floating casualties
+        ref = nearest.attrs.get("p_mean", nearest.p) if nearest.floating else nearest.p
+        err = dist2(ref, d.pos)
         served_truth = {x["truth"] for x in self.deliveries}
         rec = {"t": t, "track": a["id"], "truth": nearest.id, "cat": nearest.attrs.get("cat"), "err_m": round(err, 2),
                "on_target": err <= self.p["mission"]["delivery_radius"] and nearest.id not in served_truth, "drone": d.name}
         self.deliveries.append(rec)
+        if err <= 1.5:
+            nearest.attrs["marked"] = True  # the kit stays with the casualty (drifts with them)
         self.say(f"[{t:7.1f}s] {d.name} DROP        kit -> {nearest.id} (truth error {err:.2f} m)")
 
     def _truth_checks(self, d: DroneUnit, t: float) -> None:
@@ -370,6 +399,9 @@ class MissionSim:
         if z < 0.5:
             return
         for o in self.world.objects:
+            if o.cls == Cls.MINE and float(o.attrs.get("depth", 0.0)) > 0.0:
+                self._hidden_mine_check(d, o, t)
+                continue
             if o.cls in SAFETY_TRUTH:
                 R = SAFETY_TRUTH[o.cls]
             elif o.cls == Cls.HOSTILE:
@@ -386,6 +418,24 @@ class MissionSim:
             else:
                 self._in_contact.discard(key)
 
+    def _hidden_mine_check(self, d, o, t: float) -> None:
+        """Hidden mine: entering its radius AFTER it was registered (confirmed track) is a
+        violation; overflying it before any sensor could find it is reported separately."""
+        R = float(self.p["zones"]["safety_submerged_mine"])
+        dd = dist2(o.p, d.pos) - R
+        key = ("hidden", o.id)
+        if dd >= 0:
+            self._in_contact.discard(key)
+            return
+        if key in self._in_contact:
+            return
+        self._in_contact.add(key)
+        known = any(tr.cls == Cls.MINE and dist2(tr.pos, o.p) < 8.0 for tr in d.agent.confirmed())
+        if known:
+            self.zone_entries.append({"t": t, "obj": o.id, "depth_m": round(-dd, 2), "hidden_registered": True})
+        else:
+            self.hidden_overflights.append({"t": t, "obj": o.id})
+
     # ----------------------------------------------------------- handover
     def _spawn_drone2(self, t: float) -> None:
         msg = self.pending_handover or {"s": self.active.mayday_snapshot}
@@ -393,17 +443,7 @@ class MissionSim:
         via = "station (reassembled from fragments)" if self.pending_handover else "local copy (station never received it)"
         self.say(f"[{t:7.1f}s] station     MAYDAY handover -> drone2 takes off with snapshot via {via}")
         d2 = self._new_drone("drone2", t)
-        st = d2.orch.state
-        st["served_ids"] = sorted(set(snap.get("served", [])) | {c["id"] for c in snap.get("cas", []) if c.get("s")})
-        st["explore_idx"] = int(snap.get("explore_idx", 0))
-        st["handover"] = True
-        if snap.get("cov_rle"):
-            d2.orch.brain.coverage.load_rle(snap["cov_rle"])
-        st["manual_zones"] = [Zone(z["id"], z["cls"], tuple(z["center"]), float(z["radius"]), tuple(z.get("vel", (0, 0))), 0.0, "handover")
-                              for z in snap.get("zones", [])]
-        d2.agent.seed_tracks([track_from_dict({**c, "cls": Cls.INJURED, "confirmed": True}) for c in snap.get("cas", [])], t)
-        self.log.add(event(t, "handover", "INIT", f"drone2 resumes: {sum(1 for c in snap.get('cas', []) if not c.get('s'))} casualties to serve, "
-                                                    f"{len(snap.get('zones', []))} zones, coverage {snap.get('cov')}"))
+        apply_snapshot(d2.orch, d2.agent, snap, t, self.log)  # same code path as the ROS nodes
         self.drones.append(d2)
         self.active = d2
         self.pending_handover = None
@@ -411,7 +451,7 @@ class MissionSim:
     # ------------------------------------------------------------ metrics
     def _finish(self) -> dict:
         self.log.close()
-        cas_truth = self.world.truth_of(Cls.INJURED)
+        cas_truth = [o for o in self.world.truth_of(Cls.INJURED) if o.attrs.get("cat") != "DCD"]  # living casualties
         served_order = [x["truth"] for x in self.deliveries if x["on_target"]]
         oracle = sorted([o.id for o in cas_truth], key=lambda i: -URGENCY[Start(next(o for o in cas_truth if o.id == i).attrs["cat"])])
         loc_err = []
@@ -420,6 +460,13 @@ class MissionSim:
                 same = [o for o in self.world.objects if o.cls == tr.cls]
                 if same:
                     loc_err.append(min(dist2(o.p, tr.pos) for o in same))
+        float_err = []
+        for d in self.drones:
+            for tr in d.agent.confirmed():
+                if tr.floating:
+                    same = [o for o in self.world.objects if o.cls == tr.cls and o.floating]
+                    if same:
+                        float_err.append(round(min(dist2(o.p, tr.pos) for o in same), 2))
         false_tracks = 0
         for d in self.drones:
             for tr in d.agent.confirmed():
@@ -460,6 +507,9 @@ class MissionSim:
                        "kendall_tau_vs_urgency": round(kendall_tau(served_order, oracle), 3),
                        "first_delivery_s": self.deliveries[0]["t"] if self.deliveries else None},
             "rth": rth,
+            "sea": {"true_current": [round(v, 3) for v in self.world.current],
+                    "estimated_current": [round(v, 3) for v in self.drones[-1].agent.sea_current],
+                    "floating_track_err_m": float_err},
             "comms": {**comm, "station_resync_s": [round(x, 2) for x in self.station.resync_times],
                       "station_rx": self.station.stats, "goal_reaction_ms": self.goal_reactions},
             "security": {"forged_rejected": comm["forged_rejected"], "replay_rejected": comm["replay_rejected"],
@@ -468,7 +518,18 @@ class MissionSim:
                            "energy_wh": round(sum(d.energy.capacity_wh - d.battery_wh for d in self.drones), 2),
                            "wh_per_casualty": round(sum(d.energy.capacity_wh - d.battery_wh for d in self.drones) / max(1, len(served_order)), 2)},
             "mayday": {"happened": d1.mayday_snapshot is not None, "drone2": len(self.drones) > 1},
+            "mines": self._mine_report(),
         }
+        try:
+            from ..mission_map import export_mission_map, track_row
+
+            last = self.drones[-1]
+            served = last.orch.state.get("served_ids", [])
+            export_mission_map(self.out, self.p["mission"]["area"], [track_row(t, served) for d in self.drones for t in d.agent.confirmed()],
+                               [z.to_dict() for z in last.agent.zones()], last.orch.brain.coverage,
+                               [(p[1], p[2]) for d in self.drones for p in d.trajectory], served, self.p["water"]["polygons"], "mission_map")
+        except Exception as e:  # noqa: BLE001
+            self.say(f"map export skipped: {e}")
         with open(os.path.join(self.out, "metrics.json"), "w", encoding="utf-8") as f:
             json.dump(m, f, indent=1, default=str)
         try:
@@ -476,6 +537,21 @@ class MissionSim:
         except Exception as e:  # noqa: BLE001 (plot is best effort)
             self.say(f"plot skipped: {e}")
         return m
+
+    def _mine_report(self) -> dict:
+        rows = {}
+        for o in self.world.objects:
+            if o.cls != Cls.MINE:
+                continue
+            m = [tr for d in self.drones for tr in d.agent.confirmed() if tr.cls == Cls.MINE and dist2(tr.pos, o.p) < 8.0]
+            fa = self.found_at.get(o.id)
+            covered = any(dist2(z.center, o.p) <= z.radius for d in self.drones for z in d.agent.zones() if z.cls == Cls.MINE)
+            rows[o.id] = {"depth": o.attrs.get("depth", 0.0), "found": bool(m) or fa is not None, "found_at": fa,
+                          "covered_by_zone": covered,
+                          "layers": sorted({l for tr in m for l in tr.attrs.get("layers", ["vision"])}),
+                          "depth_est": m[0].attrs.get("depth") if m else None,
+                          "err_m": round(min(dist2(tr.pos, o.p) for tr in m), 2) if m else None}
+        return {"per_mine": rows, "hidden_overflights_before_detection": len(self.hidden_overflights)}
 
     def _spoof_start(self):
         f = next((f for f in self.faults if f["type"] == "spoof"), None)

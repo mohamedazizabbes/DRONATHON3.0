@@ -52,6 +52,13 @@ class DroneState(TypedDict, total=False):
     gnss_prev_ok: bool
     mayday_sent: bool
     handover: bool  # drone 2 started from a MAYDAY snapshot
+    energy_scale: float  # online power-model calibration factor
+    retry_after: dict  # casualty id -> time a paused delivery may be retried
+    abort_rounds: dict  # casualty id -> delivery rounds aborted
+    sonar_requests: list  # input: [(mine track id, (x, y))] tentative magnetic contacts to confirm
+    mag_requests: list  # input: tentative magnetic contacts on land -> low magnetic inspection
+    sonar_active: Optional[dict]  # current dipping-sonar task
+    sonar_done: list  # finished / skipped sonar task ids
     replan: bool
     triage_sig: str
     triage_t: float
@@ -109,6 +116,13 @@ def initial_state(params: dict, t: float = 0.0) -> DroneState:
         gnss_prev_ok=True,
         mayday_sent=False,
         handover=False,
+        energy_scale=1.0,
+        retry_after={},
+        abort_rounds={},
+        sonar_requests=[],
+        mag_requests=[],
+        sonar_active=None,
+        sonar_done=[],
         replan=True,
         triage_sig="",
         triage_t=-1e9,

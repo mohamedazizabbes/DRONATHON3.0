@@ -23,7 +23,7 @@ import rclpy
 from geometry_msgs.msg import Vector3
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
-from sensor_msgs.msg import CameraInfo
+from sensor_msgs.msg import CameraInfo, MagneticField
 from std_msgs.msg import Float32, String
 
 from skyforge_core.domain import Detection, Zone
@@ -41,6 +41,21 @@ class PerceptionAgentNode(Node):
         self.p = node_params(self)
         self.cam = Camera.from_params(self.p)
         self.agent = PerceptionAgent(self.p, self.cam)
+        self.declare_parameter("resume_snapshot", "")
+        snap_path = self.get_parameter("resume_snapshot").value
+        if snap_path and snap_path not in ("none", "None"):
+            from skyforge_core.brain.handover import load_snapshot
+            from skyforge_core.domain import Cls, track_from_dict
+
+            snap = load_snapshot(snap_path)
+            tracks = []
+            for c in snap.get("cas", []):
+                tr = track_from_dict({**c, "cls": Cls.INJURED, "confirmed": True})
+                if c.get("s"):
+                    tr.attrs["marked"] = True
+                tracks.append(tr)
+            self.agent.seed_tracks(tracks, now_s(self))
+            self.get_logger().warn(f"HANDOVER: {len(tracks)} casualties seeded from {snap_path}")
         self.wind = (0.0, 0.0)
         self.poses: deque = deque(maxlen=400)  # (t, pos, rpy)
         self.pending: dict[str, tuple[float, list[Detection]]] = {}
@@ -55,6 +70,12 @@ class PerceptionAgentNode(Node):
         self.pub_zones = self.create_publisher(ZoneArray, "/perception/zones", 10)
         self.pub_prov = self.create_publisher(ZoneArray, "/perception/provisional", 10)
         self.pub_lat = self.create_publisher(Float32, "/perception/latency_ms", 10)
+        # mine layers 2 (magnetometer) and 3 (dipping sonar)
+        self.create_subscription(MagneticField, "/sensors/mag", self.on_mag, QOS_SENSOR)
+        self.create_subscription(String, "/sensors/sonar", self.on_sonar, 10)
+        self.pub_sonar_req = self.create_publisher(String, "/perception/sonar_requests", 10)
+        self.pub_mag_req = self.create_publisher(String, "/perception/mag_requests", 10)
+        self.create_subscription(String, "/perception/mag_inspect", self.on_mag_inspect, 10)
         self.create_timer(0.1, self.publish)  # 10 Hz outputs, prediction between frames
         self._info_logged = False
 
@@ -108,6 +129,37 @@ class PerceptionAgentNode(Node):
         self.agent.process(dets, pos, rpy, stamp, self.wind)
         self.pub_lat.publish(Float32(data=(time.perf_counter_ns() - t0) / 1e6))
 
+    def on_mag(self, m: MagneticField):
+        t = m.header.stamp.sec + m.header.stamp.nanosec * 1e-9
+        pose = self.pose_at(t)
+        if pose is None:
+            return
+        f = m.magnetic_field
+        total_nt = math.sqrt(f.x * f.x + f.y * f.y + f.z * f.z) * 1e9  # tesla -> nT
+        tr = self.agent.add_mag_sample(t, pose[1], total_nt)
+        if tr is not None:
+            self.get_logger().info(f"magnetic contact -> {tr.id} at ({tr.pos[0]:.1f},{tr.pos[1]:.1f}) layers {tr.attrs.get('layers')}")
+
+    def on_mag_inspect(self, m: String):
+        """Orchestrator finished a close-range magnetic inspection hover: re-invert with all samples."""
+        d = json.loads(m.data)
+        tr = self.agent.mag_reinspect(d.get("track", ""), now_s(self))
+        if tr is not None:
+            self.get_logger().info(f"magnetic inspection -> {tr.id} confirmed={tr.confirmed} conf {tr.conf:.2f}")
+
+    def on_sonar(self, m: String):
+        """{"stamp": s, "contacts": [{"range": m, "bearing": rad ENU, "depth": m, "strength": 0..1}]}"""
+        try:
+            d = json.loads(m.data)
+        except ValueError:
+            return
+        t = float(d.get("stamp", now_s(self)))
+        pose = self.pose_at(t)
+        if pose is None:
+            return
+        for tr in self.agent.add_sonar_ping(pose[1][:2], d.get("contacts", []), t):
+            self.get_logger().info(f"sonar contact -> {tr.id} depth {tr.attrs.get('depth')} m layers {tr.attrs.get('layers')}")
+
     def publish(self):
         t = now_s(self)
         self.agent.predict(t, self.wind)
@@ -116,6 +168,8 @@ class PerceptionAgentNode(Node):
         self.pub_zones.publish(zones_msg(self.agent.zones(), stamp))
         prov = [Zone(f"P{i}", "provisional", c, r, source="provisional") for i, (c, r) in enumerate(self.agent.provisional_zones())]
         self.pub_prov.publish(zones_msg(prov, stamp))
+        self.pub_sonar_req.publish(String(data=json.dumps([[i, list(p)] for i, p in self.agent.sonar_requests()])))
+        self.pub_mag_req.publish(String(data=json.dumps([[i, list(p)] for i, p in self.agent.mag_requests()])))
 
 
 def main():
