@@ -266,9 +266,20 @@ class Brain:
         return "immediate" if s.get("handover") else self.mp["triage_policy"]
 
     def _urgent_only(self, s: DroneState) -> bool:
-        return self._exploring_left(s) and self._policy(s) == "hybrid"
+        return self._exploring_left(s) and self._policy(s) == "hybrid" and not self._energy_rescue(s)
+
+    def _energy_rescue(self, s: DroneState) -> bool:
+        """People before coverage: when the battery approaches what serving the best pending
+        casualty (and coming home) costs, stop exploring / surveying and serve now."""
+        res = self.triage(s)
+        if res.best is None:
+            return False
+        need = self.energy.factor(s.get("gnss_ok", True)) * res.best.energy_wh
+        return s["battery_wh"] < self.mp["rescue_energy_margin"] * need
 
     def _preempt_needed(self, s: DroneState) -> bool:
+        if self.pending(s) and self._energy_rescue(s):
+            return True
         policy = self._policy(s)
         pend = self.pending(s)
         if not pend:
@@ -326,13 +337,14 @@ class Brain:
                 break
         u["explore_idx"] = idx
         if idx >= len(self.lanes) or s.get("coverage", 0.0) >= self.mp["coverage_target"]:
-            sonar = self._sonar_step(s, ev, u, coverage_done=True)  # finish remaining dips first
+            # people first: serve pending casualties before the remaining survey dips
+            sonar = None if self.triage(s).best is not None else self._sonar_step(s, ev, u, coverage_done=True)
             if sonar is not None:
                 u["current_goal"] = sonar
                 u["events"] = ev
                 return u
             why = f"coverage {100 * s.get('coverage', 0):.0f}% complete"
-            if self.pending(s):
+            if self.pending(s) and self.triage(s).best is not None:
                 u.update(self._transition(s, Phase.TRIAGE, why + ", casualties pending", ev))
             else:
                 u.update(self._transition(s, Phase.RETURN_BASE, why + ", nobody left to serve", ev))
@@ -373,6 +385,17 @@ class Brain:
 
     def _task_alt(self, t: dict) -> float:
         return self.p["magnetic"]["inspect_alt"] if t.get("kind") == "mag" else self.p["sonar"]["dip_alt"]
+
+    def _survey_startable(self, s: DroneState) -> bool:
+        """A pending / active survey task that the drone can actually fly now (energy + standoff)."""
+        sp = self.p["sonar"]
+        if not sp["enabled"]:
+            return False
+        if s.get("sonar_active"):
+            return True
+        if s["battery_wh"] < sp["survey_energy_factor"] * s.get("rth_threshold_wh", 0.0):
+            return False
+        return any(self._task_point(s, t) is not None for t in self._sonar_tasks(s))
 
     def _sonar_step(self, s: DroneState, ev: list, u: dict, coverage_done: bool) -> Optional[dict]:
         """Run / pick a dipping-sonar task. Returns the goal to fly, or None."""
@@ -420,6 +443,9 @@ class Brain:
                 return None
             u["sonar_active"] = act
             return self._goal("sonar_dip", act["p"], self._task_alt(act), id=act["id"])
+        # survey work only with a comfortable energy margin (rescue and return come first)
+        if s["battery_wh"] < sp["survey_energy_factor"] * s.get("rth_threshold_wh", 0.0):
+            return None
         best = None
         for t in self._sonar_tasks(s):
             stand = self._task_point(s, t)
@@ -497,7 +523,7 @@ class Brain:
                 u.update(self._transition(s, Phase.EXPLORE, f"{why}, area left", ev))
             else:
                 why = "none feasible" if res.ranked else "no casualty pending"
-                if self._sonar_tasks(s) or s.get("sonar_active"):
+                if self._survey_startable(s):
                     # finish pending sonar dips / magnetic inspections before going home
                     u.update(self._transition(s, Phase.EXPLORE, f"{why}, coverage complete, survey tasks pending", ev))
                 else:

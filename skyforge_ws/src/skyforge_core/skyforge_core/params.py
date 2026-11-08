@@ -29,6 +29,7 @@ DEFAULTS: dict[str, Any] = {
         # hybrid: only casualties with urgency >= preempt_urgency interrupt exploration
         "triage_policy": "hybrid",
         "preempt_urgency": 0.95,
+        "rescue_energy_margin": 1.8,  # serve pending casualties when battery < this x their gate energy
         "kits": 4,  # medical kits on board
         "serve_deceased": False,  # never spend a kit on a casualty flagged likely deceased (reported to the station)
         "coverage_target": 0.97,
@@ -210,8 +211,9 @@ DEFAULTS: dict[str, Any] = {
         "max_samples": 6000,
         "confirm_conf": 0.6,  # stronger contacts confirm a mine on their own, weaker ones ask for a sonar dip
         "weapon_attribution_m": 5.0,  # a ferrous anomaly on a known weapon is the weapon, not a mine
-        "confirm_events": 2,  # ... or this many independent, consistent magnetic events
+        "confirm_events": 99,  # weak events never confirm by repetition (phantoms): inspection / sonar decide
         "min_event_conf": 0.25,
+        "cue_ttl_s": 180.0,  # > a confirmation task's timeout, so a cue never expires mid-task  # an unconfirmed magnetic / sonar cue expires after this without new evidence
         "inspect": True,  # land contacts (no sonar): low magnetic inspection beside the contact
         "inspect_alt": 10.0,
         "inspect_dwell_s": 3.0,
@@ -227,6 +229,7 @@ DEFAULTS: dict[str, Any] = {
         "task_radius_m": 70.0,  # do a pending dip when it is this close to the drone
         "task_timeout_s": 60.0,
         "standoff_extra_m": 3.0,
+        "survey_energy_factor": 1.6,  # start a dip / inspection only if battery > this x RTH threshold
         "confirm_conf": 0.5,
         "range_sigma_m": 1.0,
     },

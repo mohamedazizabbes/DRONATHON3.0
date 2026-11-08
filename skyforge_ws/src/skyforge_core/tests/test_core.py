@@ -562,3 +562,42 @@ def test_mission_map_export(P, tmp_path):
     doc = json.loads(open(out["json"], encoding="utf-8").read())
     assert doc["objects"][0]["served"] and doc["objects"][1]["layers"] == ["sonar"] and 0 < doc["coverage"] < 1
     assert out["png"] and os.path.exists(out["png"])
+
+
+def test_phantom_magnetic_cue_rejected_by_sonar_but_confirmed_mines_kept(P):
+    ag = PerceptionAgent(P)
+    cue = ag.add_mine_contact("mag", (100.0, -50.0), 3.0, 5.0, 0.3, 1.0)  # weak cue in water
+    real = ag.add_mine_contact("sonar", (130.0, -50.0), 8.0, 1.5, 0.9, 1.0)  # confirmed mine
+    assert not cue.confirmed and real.confirmed
+    ag.add_sonar_ping((110.0, -45.0), [], 2.0)  # dip right next to both: hears nothing
+    ids = {t.id for t in ag.tracks()}
+    assert cue.id not in ids and real.id in ids  # phantom rejected, confirmed mine never removed
+    assert ag.rejected and ag.rejected[0]["id"] == cue.id
+    assert ag.add_mine_contact("mag", (100.0, -50.0), 3.0, 5.0, 0.3, 3.0).confirmed is False  # weak alone never confirms
+
+
+def test_no_livelock_when_nothing_is_doable_after_coverage(P):
+    o = Orchestrator(P, engine="fsm")
+    blocked = _cas("C9", (100.0, 0.0), Start.DELAYED)
+    zone = Zone("ZM1", Cls.MINE, (100.0, 0.0), 15.0)  # casualty unreachable (inside a mine zone)
+    o.state.update(phase=Phase.EXPLORE, explore_idx=len(o.brain.lanes), coverage=0.99, casualties=[blocked], zones=[zone])
+    phases = []
+    for k in range(30):
+        s = o.tick({"t": 1.0 + 0.1 * k, "armed": True, "pos": (50.0, 20.0, 25.0), "battery_wh": 12.0,  # low: survey not allowed
+                    "casualties": [blocked], "zones": [zone]})
+        phases.append(s["phase"])
+    assert phases[-1] == Phase.RETURN_BASE
+    changes = sum(1 for a, b in zip(phases, phases[1:]) if a != b)
+    assert changes <= 2  # no EXPLORE <-> TRIAGE ping-pong
+
+
+def test_rth_energy_follows_the_detour_home(P):
+    from skyforge_core.planning.agent import PlannerAgent
+
+    ag = PlannerAgent(P)
+    wall = [Zone(f"ZW{i}", Cls.MINE, (60.0, -30.0 + 15.0 * i), 14.0) for i in range(5)]  # wall between drone and home
+    s = {"t": 0.0, "pos": (120.0, 0.0, 25.0), "zones": wall, "manual_zones": [], "wind": (0, 0), "gnss_ok": True}
+    _, e_detour = ag.rth(s)
+    _, e_free = PlannerAgent(P).rth({**s, "zones": []})
+    fixed = ag.energy.land_wh + ag.energy.reserve_wh
+    assert (e_detour - fixed) > 1.15 * (e_free - fixed)  # the flight leg around the zones costs clearly more

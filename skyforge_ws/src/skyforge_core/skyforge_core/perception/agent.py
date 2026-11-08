@@ -49,6 +49,7 @@ class PerceptionAgent:
         self.wind = (0.0, 0.0)
         self.sea = SeaStateEstimator(self.dp["current"], self.dp["k_leeway"], self.dp.get("sea_tau_s", 30.0))
         self.mag = MagAnomalyDetector(params) if params["magnetic"]["enabled"] else None
+        self.rejected: list[dict] = []  # phantom mine cues rejected by inspection / sonar
         self.stats = {"frames": 0, "dets_in": 0, "dets_low_conf": 0, "dets_no_ground": 0, "tracks_created": 0, "tracks_deleted": 0}
 
     # ------------------------------------------------------------------ io
@@ -216,6 +217,15 @@ class PerceptionAgent:
 
         self._refresh_categories(stamp)
         self._update_sea_state(stamp)
+        self._expire_cues(stamp)
+
+    def _expire_cues(self, now: float) -> None:
+        ttl = self.p["magnetic"]["cue_ttl_s"]
+        for tid, s in list(self._tracks.items()):
+            tr = s.track
+            layers = tr.attrs.get("layers")
+            if not tr.confirmed and layers and "vision" not in layers and now - tr.last_seen > ttl:
+                self._reject_mine_cue(tid, now, f"unconfirmed for {ttl:.0f}s")
 
     # ------------------------------------------------------------ internals
     def _birth(self, d: Detection, g, sig: float, stamp: float) -> None:
@@ -432,9 +442,20 @@ class PerceptionAgent:
         for c in contacts:
             r, b = float(c["range"]), float(c["bearing"])
             pos = (dip_pos[0] + r * math.cos(b), dip_pos[1] + r * math.sin(b))
+            if not in_any_polygon(pos, self.water):
+                continue  # a sonar cannot see under land: clutter / multipath
             tr = self.add_mine_contact("sonar", pos, float(c.get("depth", 5.0)), sig + 0.02 * r, float(c.get("strength", 0.8)), stamp)
             if tr is not None:
                 out.append(tr)
+        # negative evidence: a tentative magnetic cue in water, well inside sonar range, that the
+        # ping did not confirm is a phantom
+        rng = self.p["sonar"]["range_m"]
+        hit = {tr.id for tr in out}
+        for tid, s in list(self._tracks.items()):
+            tr = s.track
+            if (tr.cls == Cls.MINE and not tr.confirmed and tr.attrs.get("layers") == ["mag"] and tid not in hit
+                    and in_any_polygon(s.kf.pos, self.water) and dist2(s.kf.pos, dip_pos) <= 0.8 * rng):
+                self._reject_mine_cue(tid, stamp, "sonar sees nothing there")
         return out
 
     def mag_requests(self) -> list[tuple[str, tuple[float, float]]]:
@@ -454,7 +475,20 @@ class PerceptionAgent:
         if not near:
             return None
         c = self.mag.invert(st.kf.pos, max(near), t)
-        return self._apply_mag_contact(c, t) if c is not None else None
+        if c is None or c.conf < self.p["magnetic"]["confirm_conf"] or dist2(c.pos, st.kf.pos) > 3.0 * max(st.kf.sigma, 4.0):
+            # close range shows no strong source there: the weak cue was a phantom -> reject it
+            self._reject_mine_cue(tid, t, "no strong magnetic source at close range")
+            return None
+        return self._apply_mag_contact(c, t)
+
+    def _reject_mine_cue(self, tid: str, t: float, why: str) -> None:
+        st = self._tracks.pop(tid, None)
+        if st is None:
+            return
+        if self.mag is not None:
+            self.mag.known.pop(tid, None)  # stop peeling a source that does not exist
+        self.rejected.append({"t": round(t, 2), "id": tid, "pos": [round(v, 1) for v in st.kf.pos], "why": why})
+        self.stats["mine_cues_rejected"] = self.stats.get("mine_cues_rejected", 0) + 1
 
     def sonar_requests(self) -> list[tuple[str, tuple[float, float]]]:
         """Tentative magnetic mine contacts that need a sonar dip to confirm/deny."""
@@ -468,6 +502,9 @@ class PerceptionAgent:
         out = []
         for s in self._tracks.values():
             tr = s.track
+            layers = tr.attrs.get("layers")
+            if layers and "vision" not in layers:
+                continue  # buried / submerged cue: no hazard to the aircraft, not a registered zone
             if tr.cls in DANGER_CLASSES and not tr.confirmed:
                 base = self.zp["safety"][tr.cls]
                 out.append((s.kf.pos, base + min(self.zp["sigma_k"] * s.kf.sigma, 4.0)))

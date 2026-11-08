@@ -38,6 +38,7 @@ class PlannerAgent:
         self.home = tuple(self.mp["home"])
         self.static_obstacles = [(tuple(o["p"]), float(o["r"]), float(o.get("h", 100.0))) for o in params.get("obstacles", [])]
         self.build_area(self.mp["area"])
+        self._rth_path, self._rth_path_t = None, -1e9
 
     # ------------------------------------------------------------ objectives
     def build_area(self, area: dict) -> None:
@@ -176,9 +177,25 @@ class PlannerAgent:
 
     # ------------------------------------------------------------- energy
     def rth(self, s) -> tuple[float, float]:
+        """E_RTH along the PLANNED path home (A* around zones), refreshed every 2 s,
+        never less than the straight line: detours around exclusion zones cost energy."""
         w = s.get("wind", (0, 0))
-        thr = self.energy.rth_threshold(s["pos"], self.home, self.mp["cruise_speed"], w, s.get("gnss_ok", True))
-        return thr, self.energy.e_rth(s["pos"], self.home, self.mp["cruise_speed"], w)
+        v = self.mp["cruise_speed"]
+        t = s.get("t", 0.0)
+        if t - self._rth_path_t >= 2.0 or self._rth_path is None:
+            self._rth_path_t = t
+            res = self.plan_path(s, self.home) if dist2(s["pos"], self.home) > 5.0 else None
+            self._rth_path = res.path if res is not None and res.ok else None
+        straight = self.energy.leg_wh(s["pos"], self.home, v, w)
+        leg = straight
+        if self._rth_path:
+            pts = [tuple(s["pos"][:2])] + [tuple(p) for p in self._rth_path[1:]]
+            leg = max(straight, self.energy.path_wh(pts, v, w))
+        # vertical: climbing back to cruise altitude (after a delivery / sonar dip) costs hover power
+        climb = max(0.0, self.mp["cruise_alt"] - s["pos"][2]) / max(self.p["reflex"]["max_vz"], 0.5)
+        e_climb = self.energy.power_w(0.0) * climb / 3600.0
+        e_rth = leg + e_climb + self.energy.land_wh + self.energy.reserve_wh
+        return self.energy.factor(s.get("gnss_ok", True)) * e_rth, e_rth
 
     def calibrate_energy(self, s) -> Optional[float]:
         airborne = s["pos"][2] > 2.0 and s.get("armed", False)

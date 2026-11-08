@@ -248,9 +248,12 @@ class World:
                                 "bearing": math.atan2(o.p[1] - pos[1], o.p[0] - pos[0]) + self.rng.gauss(0, 0.03),
                                 "depth": float(o.attrs["depth"]) + self.rng.gauss(0, 0.5),
                                 "strength": max(0.55, 0.95 - 0.4 * r / range_m)})
-        if self.rng.random() < 0.1:  # rock / clutter: weak contact (never confirms alone)
-            out.append({"range": self.rng.uniform(10, range_m), "bearing": self.rng.uniform(-math.pi, math.pi),
-                        "depth": self.rng.uniform(2, 15), "strength": 0.3})
+        if self.rng.random() < 0.1:  # rock / clutter in the water: weak contact (never confirms alone)
+            for _ in range(10):
+                r, b = self.rng.uniform(10, range_m), self.rng.uniform(-math.pi, math.pi)
+                if in_any_polygon((pos[0] + r * math.cos(b), pos[1] + r * math.sin(b)), self.water):
+                    out.append({"range": r, "bearing": b, "depth": self.rng.uniform(2, 15), "strength": 0.3})
+                    break
         return out
 
     def truth_of(self, cls: str) -> list[TruthObject]:

@@ -545,7 +545,9 @@ class MissionSim:
                 continue
             m = [tr for d in self.drones for tr in d.agent.confirmed() if tr.cls == Cls.MINE and dist2(tr.pos, o.p) < 8.0]
             fa = self.found_at.get(o.id)
+            covered = any(dist2(z.center, o.p) <= z.radius for d in self.drones for z in d.agent.zones() if z.cls == Cls.MINE)
             rows[o.id] = {"depth": o.attrs.get("depth", 0.0), "found": bool(m) or fa is not None, "found_at": fa,
+                          "covered_by_zone": covered,
                           "layers": sorted({l for tr in m for l in tr.attrs.get("layers", ["vision"])}),
                           "depth_est": m[0].attrs.get("depth") if m else None,
                           "err_m": round(min(dist2(tr.pos, o.p) for tr in m), 2) if m else None}
