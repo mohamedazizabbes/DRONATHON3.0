@@ -1,0 +1,122 @@
+# SKYFORGE parameters: the ONLY place tunables live (no rebuild to tune).
+# Loaded by every node through the config_file parameter, and by the 2D sim (--config).
+# Units: metres, seconds, m/s, Wh, W. Frame: ENU relative to the home pad.
+# Replace mission.area / obstacles / comm.shadow_polygons / water.polygons with the jury scenario.
+# energy.* must come from the conception power budget (calibrate with a 60 s hover + 60 s cruise).
+skyforge:
+  mission:
+    home: [0.0, 0.0]
+    area: {xmin: -10.0, xmax: 230.0, ymin: -70.0, ymax: 90.0}
+    cruise_alt: 25.0
+    cruise_speed: 6.0
+    delivery_alt: 5.0
+    delivery_radius: 1.5
+    delivery_max_retries: 3
+    release_offset_m: 1.0
+    release_max_speed: 0.6
+    takeoff_tol: 1.0
+    waypoint_tol: 2.5
+    triage_policy: hybrid
+    preempt_urgency: 0.95
+    kits: 4
+    coverage_target: 0.97
+    switch_hysteresis: 1.25
+    duplicate_radius_m: 6.0
+    duplicate_max_m: 15.0
+    duplicate_max_floating_m: 45.0
+    release_confirm_ticks: 3
+    lost_target_search_s: 25.0
+  camera:
+    width: 640
+    height: 480
+    hfov_deg: 80.0
+    mount_offset: [0.0, 0.0, -0.1]
+    tilt_deg: 20.0
+    lane_overlap: 0.8
+  perception:
+    gate_m: 3.0
+    gate_sigma_k: 2.0
+    gate_max_m: 8.0
+    reid_stale_s: 5.0
+    reid_base_m: 6.0
+    reid_max_m: 25.0
+    confirm_hits: 3
+    confirm_window: 5
+    delete_after_misses: 4
+    conf_threshold: {default: 0.25, mine: 0.15, weapon: 0.15, injured: 0.2, hostile_unit: 0.2}
+    pixel_sigma: 3.0
+    attitude_sigma_rad: 0.02
+    ambient_k: 295.0
+    warm_delta_k: 6.0
+    immobile_s: 10.0
+    motion_window_s: 15.0
+    motion_thresh_m: 0.8
+    mine_proximity_m: 20.0
+    slow_radius_m: 25.0
+  drift:
+    current: [0.15, 0.05]
+    k_leeway: 0.03
+    q_pos: 0.02
+    q_vel: 0.0001
+    max_speed_dev: 0.15
+    vel_sigma_floor: 0.03
+    meas_sigma_floor: 0.8
+    r_meas: 1.0
+    max_sigma: 30.0
+    vel_sigma0: 0.1
+  zones:
+    safety: {mine: 15.0, weapon: 10.0, hostile_unit: 25.0}
+    sigma_k: 2.0
+    wind_k: 0.5
+    los_factor: 1.6
+    los_cost: 10.0
+    gnss_lost_extra: 5.0
+    max_sigma_term_m: 12.0
+  water:
+    polygons:
+    - - [-1000.0, -1000.0]
+      - [1000.0, -1000.0]
+      - [1000.0, -20.0]
+      - [-1000.0, -20.0]
+  obstacles:
+  - id: lighthouse
+    p: [100, 62]
+    r: 5.0
+    h: 40.0
+  - id: rock
+    p: [165, 2]
+    r: 4.0
+    h: 12.0
+  - id: pole
+    p: [30, 10]
+    r: 1.0
+    h: 30.0
+  planner: {grid_res: 2.0, drone_radius: 0.6, safety_margin: 3.0, wind_margin_k: 0.3, low_vis_extra: 2.0, replan_move_m: 3.0,
+    plan_extra_m: 2.0, search_step: 6.0, search_legs: 8, max_expansions: 60000}
+  energy: {capacity_wh: 90.0, p_hover_w: 180.0, k_speed: 0.012, v_min: 1.0, reserve_frac: 0.15, rth_factor: 1.3, rth_factor_gnss_lost: 1.5,
+    land_wh: 0.6, deliver_wh: 0.8, gust_factor: 1.2, critical_pct: 8.0}
+  reflex: {rate_hz: 50.0, max_speed: 8.0, max_vz: 2.5, lookahead_m: 4.0, kp_pos: 0.8, kp_alt: 0.9, rep_influence_m: 10.0,
+    rep_gain: 30.0, zone_buffer_m: 2.0, wind_ff_alpha: 0.05, wind_ff_max: 4.0, stale_plan_s: 1.5, climb_first_frac: 0.8, boat_horizon_s: 2.0}
+  comm:
+    version: 1
+    key_hex: 736b79666f7267652d64726f6e617468
+    ring_capacity: 512
+    max_msg_bytes: 1024
+    tel_period_s: 1.0
+    ack_period_s: 2.0
+    station: [0.0, 0.0]
+    max_range_m: 450.0
+    shadow_polygons:
+    - - [120, 55]
+      - [170, 55]
+      - [170, 95]
+      - [120, 95]
+    base_loss: 0.0
+    jam_loss: 1.0
+    udp: {drone_port: 14600, station_port: 14601, station_host: 127.0.0.1, drone_host: 127.0.0.1}
+    http_port: 8080
+  health: {motor_sat_level: 0.95, motor_sat_s: 1.0, odom_timeout_s: 0.5, cam_timeout_s: 3.0, v_min_cell: 3.3, temp_max_c: 85.0}
+  nav: {gnss_sigma: 1.5, dr_sigma_growth: 0.3, gate_chi2: 13.8, spoof_consecutive: 5, recover_consecutive: 20, fix_timeout_s: 1.0,
+    min_sats: 6}
+  orchestrator: {engine: langgraph, rate_hz: 10.0}
+  logging: {dir: runs}

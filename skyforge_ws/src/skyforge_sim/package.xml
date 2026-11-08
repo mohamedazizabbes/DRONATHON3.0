@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>skyforge_sim</name>
+  <version>0.1.0</version>
+  <description>Gazebo Harmonic coastal world, drone model and bridge for SKYFORGE (twist backend)</description>
+  <maintainer email="ahmedbensalah.professional@gmail.com">Ahmed Ben Salah</maintainer>
+  <license>MIT</license>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
+  <exec_depend>ros_gz_interfaces</exec_depend>
+  <exec_depend>skyforge_core</exec_depend>
+  <exec_depend>skyforge_interfaces</exec_depend>
+  <exec_depend>skyforge_bringup</exec_depend>
+  <export><build_type>ament_python</build_type></export>
+</package>

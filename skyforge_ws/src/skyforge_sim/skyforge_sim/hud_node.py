@@ -1,0 +1,403 @@
+import json
+import math
+import time
+
+import cv2
+import numpy as np
+import rclpy
+from nav_msgs.msg import Odometry, Path
+from rclpy.node import Node
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from sensor_msgs.msg import Image
+from skyforge_core.params import DEFAULTS
+from skyforge_interfaces.msg import MissionState, TrackArray, ZoneArray
+from std_msgs.msg import String
+
+QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=2)
+GREEN = (80, 255, 80)
+CYAN = (255, 220, 0)
+RED = (40, 40, 255)
+ORANGE = (0, 160, 255)
+WHITE = (240, 240, 240)
+GREY = (150, 150, 150)
+YELLOW = (0, 230, 255)
+PHASE_COLOR = {"EXPLORE": CYAN, "DETECT": YELLOW, "TRIAGE": ORANGE, "NAVIGATE": ORANGE, "DELIVER": GREEN,
+               "RETURN_BASE": YELLOW, "LANDED": GREY, "MAYDAY": RED, "INIT": GREY}
+
+
+def to_bgr(m):
+    a = np.frombuffer(m.data, np.uint8)
+    ch = len(a) // (m.width * m.height)
+    a = a.reshape(m.height, m.width, ch)[:, :, :3]
+    return np.ascontiguousarray(a[:, :, ::-1]) if m.encoding.startswith("rgb") else np.ascontiguousarray(a)
+
+
+class Hud(Node):
+    def __init__(self):
+        super().__init__("hud")
+        self.declare_parameter("window", False)
+        self.declare_parameter("display_width", 960)
+        self.disp_w = int(self.get_parameter("display_width").value)
+        self.win_ready = False
+        self.declare_parameter("width", 1280)
+        self.declare_parameter("height", 720)
+        self.W = int(self.get_parameter("width").value)
+        self.H = int(self.get_parameter("height").value)
+        self.window = bool(self.get_parameter("window").value)
+        self.frame = None
+        self.dets = {"jury": ([], (640, 480), 0.0), "team": ([], (640, 480), 0.0)}
+        self.state = None
+        self.speed = 0.0
+        self.alt = 0.0
+        self.yaw = 0.0
+        self.t0 = time.time()
+        self.create_subscription(Image, "/cam/rgb", self.on_img, QOS)
+        self.create_subscription(String, "/vision/jury", lambda m: self.on_det(m, "jury"), QOS)
+        self.create_subscription(String, "/vision/team", lambda m: self.on_det(m, "team"), QOS)
+        self.create_subscription(MissionState, "/mission/state", lambda m: setattr(self, "state", m), 10)
+        self.create_subscription(Odometry, "/skyforge/odom", self.on_odom, 10)
+        self.create_subscription(TrackArray, "/perception/tracks", lambda m: setattr(self, "tracks", m.tracks), 10)
+        self.create_subscription(ZoneArray, "/perception/zones", lambda m: setattr(self, "zones", m.zones), 10)
+        self.create_subscription(Path, "/plan/waypoints", lambda m: setattr(self, "path", [(p.pose.position.x, p.pose.position.y) for p in m.poses]), 10)
+        self.tracks, self.zones, self.path, self.trail = [], [], [], []
+        self.truth = []
+        self.found = set()
+        self.create_subscription(String, "/sim/truth", self.on_truth, 10)
+        self.create_subscription(String, "/hud/event", self.on_event, 10)
+        self.events = []
+        self.delivered = []
+        self.pos = (0.0, 0.0)
+        area = DEFAULTS["mission"]["area"]
+        self.shore = max(p[1] for poly in DEFAULTS["water"]["polygons"] for p in poly)
+        self.ext = (area["xmin"] - 15, area["xmax"] + 15, area["ymin"] - 15, area["ymax"] + 15)
+        self.area = area
+        self.pub = self.create_publisher(Image, "/hud/image", 2)
+        self.create_timer(0.1, self.draw)
+
+    def on_img(self, m):
+        self.frame = to_bgr(m)
+
+    def on_det(self, m, src):
+        try:
+            d = json.loads(m.data)
+            self.dets[src] = (d.get("detections", []), tuple(d.get("image", [640, 480])), time.time())
+        except ValueError:
+            pass
+
+    def on_event(self, m):
+        try:
+            e = json.loads(m.data)
+        except ValueError:
+            return
+        self.events.append((time.time(), e))
+        if e.get("kind") == "kit":
+            self.delivered.append(e)
+
+    def on_truth(self, m):
+        try:
+            self.truth = json.loads(m.data)
+        except ValueError:
+            pass
+
+    def on_odom(self, m):
+        v = m.twist.twist.linear
+        self.speed = math.hypot(v.x, v.y)
+        self.alt = m.pose.pose.position.z
+        self.pos = (m.pose.pose.position.x, m.pose.pose.position.y)
+        if not self.trail or math.hypot(self.pos[0] - self.trail[-1][0], self.pos[1] - self.trail[-1][1]) > 2.0:
+            self.trail.append(self.pos)
+            self.trail = self.trail[-600:]
+        q = m.pose.pose.orientation
+        self.yaw = math.degrees(math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)))
+
+    def text(self, img, s, xy, col=WHITE, scale=0.6, th=1):
+        scale *= 1.3
+        th = max(th, 1 if scale < 0.75 else 2)
+        cv2.putText(img, s, xy, cv2.FONT_HERSHEY_DUPLEX, scale, (0, 0, 0), th + 2, cv2.LINE_AA)
+        cv2.putText(img, s, xy, cv2.FONT_HERSHEY_DUPLEX, scale, col, th, cv2.LINE_AA)
+
+    def target_box(self, img, p1, p2, col, label, conf):
+        x1, y1 = p1
+        x2, y2 = p2
+        w, h = max(x2 - x1, 6), max(y2 - y1, 6)
+        pad = 4
+        x1, y1, x2, y2 = x1 - pad, y1 - pad, x1 + w + pad, y1 + h + pad
+        L = max(6, min(w, h) // 3 + 4)
+        for (ax, ay), (dx, dy) in (((x1, y1), (1, 1)), ((x2, y1), (-1, 1)), ((x1, y2), (1, -1)), ((x2, y2), (-1, -1))):
+            cv2.line(img, (ax, ay), (ax + dx * L, ay), col, 2, cv2.LINE_AA)
+            cv2.line(img, (ax, ay), (ax, ay + dy * L), col, 2, cv2.LINE_AA)
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_DUPLEX, 0.45, 1)
+        ty = y1 - 8 if y1 - th - 10 > 0 else y2 + th + 10
+        cv2.rectangle(img, (x1, ty - th - 5), (x1 + tw + 8, ty + 4), col, -1)
+        cv2.putText(img, label, (x1 + 4, ty), cv2.FONT_HERSHEY_DUPLEX, 0.45, (10, 10, 10), 1, cv2.LINE_AA)
+        bw = tw + 8
+        cv2.rectangle(img, (x1, ty + 5), (x1 + bw, ty + 8), (40, 40, 40), -1)
+        cv2.rectangle(img, (x1, ty + 5), (x1 + int(bw * max(0.0, min(1.0, conf))), ty + 8), col, -1)
+
+    def map_view(self, w, h):
+        img = np.zeros((h, w, 3), np.uint8)
+        x0, x1, y0, y1 = self.ext
+        sc = min(w / (x1 - x0), h / (y1 - y0))
+        ox, oy = (w - sc * (x1 - x0)) / 2, (h - sc * (y1 - y0)) / 2
+
+        def P(x, y):
+            return int(ox + (x - x0) * sc), int(h - (oy + (y - y0) * sc))
+
+        sy = P(0, self.shore)[1]
+        img[:sy] = (70, 120, 150)
+        img[sy:] = (95, 55, 20)
+        for gx in range(int(x0) // 25 * 25, int(x1) + 1, 25):
+            cv2.line(img, P(gx, y0), P(gx, y1), (60, 60, 60), 1)
+        for gy in range(int(y0) // 25 * 25, int(y1) + 1, 25):
+            cv2.line(img, P(x0, gy), P(x1, gy), (60, 60, 60), 1)
+        a = self.area
+        cv2.rectangle(img, P(a["xmin"], a["ymax"]), P(a["xmax"], a["ymin"]), (0, 200, 255), 1)
+        over = img.copy()
+        for z in self.zones:
+            c = P(z.x, z.y)
+            cv2.circle(over, c, max(2, int(z.radius * sc)), RED if z.source != "station" else ORANGE, -1)
+            if z.soft_radius > 0:
+                cv2.circle(img, c, int(z.soft_radius * sc), RED, 1)
+        img = cv2.addWeighted(over, 0.35, img, 0.65, 0)
+        if len(self.trail) > 1:
+            cv2.polylines(img, [np.array([P(*p) for p in self.trail], np.int32)], False, (120, 120, 120), 1)
+        if len(self.path) > 1:
+            cv2.polylines(img, [np.array([P(self.pos[0], self.pos[1])] + [P(*p) for p in self.path], np.int32)], False, GREEN, 1)
+        catcol = {"IMM": RED, "DEL": ORANGE, "MIN": GREEN, "EXP": GREY, "UNK": WHITE}
+        wcol = (220, 80, 220)
+        for o in self.truth:
+            for t in self.tracks:
+                if t.confirmed and t.cls == o.get("cls") and math.hypot(t.x - o["p"][0], t.y - o["p"][1]) < 10.0:
+                    self.found.add(o["id"])
+        for o in self.truth:
+            c = P(*o["p"])
+            if o["id"] in self.found:
+                continue
+            cls = o.get("cls")
+            col = (110, 110, 110)
+            if cls == "injured":
+                cv2.circle(img, c, 7, col, 1, cv2.LINE_AA)
+            elif cls == "mine":
+                cv2.polylines(img, [np.array([(c[0], c[1] - 7), (c[0] + 7, c[1]), (c[0], c[1] + 7), (c[0] - 7, c[1])], np.int32)], True, col, 1)
+            elif cls == "hostile_unit":
+                cv2.rectangle(img, (c[0] - 7, c[1] - 7), (c[0] + 7, c[1] + 7), col, 1)
+            elif cls == "weapon":
+                cv2.drawMarker(img, c, col, cv2.MARKER_TILTED_CROSS, 12, 1)
+            else:
+                cv2.circle(img, c, 4, col, 1)
+            self.text(img, "?", (c[0] - 4, c[1] + 4), col, 0.4)
+        for t in self.tracks:
+            c = P(t.x, t.y)
+            fill = -1 if t.confirmed else 2
+            if t.cls == "injured":
+                cv2.circle(img, c, 7, catcol.get(t.category, WHITE), fill, cv2.LINE_AA)
+                self.text(img, f"{t.id} {t.category}", (c[0] + 9, c[1] - 6), catcol.get(t.category, WHITE), 0.42)
+            elif t.cls == "mine":
+                pts = np.array([(c[0], c[1] - 8), (c[0] + 8, c[1]), (c[0], c[1] + 8), (c[0] - 8, c[1])], np.int32)
+                if t.confirmed:
+                    cv2.fillPoly(img, [pts], YELLOW)
+                else:
+                    cv2.polylines(img, [pts], True, YELLOW, 2)
+            elif t.cls == "hostile_unit":
+                cv2.rectangle(img, (c[0] - 7, c[1] - 7), (c[0] + 7, c[1] + 7), RED, fill)
+            elif t.cls == "weapon":
+                cv2.drawMarker(img, c, wcol, cv2.MARKER_TILTED_CROSS, 14, 2)
+            else:
+                cv2.circle(img, c, 4, (60, 140, 200), fill)
+            if t.confirmed:
+                cv2.drawMarker(img, (c[0] + 8, c[1] + 8), GREEN, cv2.MARKER_STAR, 7, 1)
+        totals, founds = {}, {}
+        for o in self.truth:
+            k = o.get("cls", "")
+            totals[k] = totals.get(k, 0) + 1
+            if o["id"] in self.found:
+                founds[k] = founds.get(k, 0) + 1
+        names = (("injured", "casualties"), ("mine", "mines"), ("hostile_unit", "hostile"), ("weapon", "weapons"), ("debris", "debris"))
+        fx, fy = 10, h - 12
+        line = "FOUND  " + "   ".join(f"{n} {founds.get(k, 0)}/{totals[k]}" for k, n in names if k in totals)
+        cv2.rectangle(img, (0, h - 30), (w, h), (25, 25, 25), -1)
+        self.text(img, line, (fx, fy), WHITE, 0.45)
+        lx, ly, step = w - 225, 26, 24
+        cv2.rectangle(img, (lx - 10, ly - 18), (w - 6, ly + 11 * step - 4), (22, 22, 22), -1)
+        cv2.rectangle(img, (lx - 10, ly - 18), (w - 6, ly + 11 * step - 4), (90, 90, 90), 1)
+        entries = [
+            ("circle", RED, "casualty IMM"), ("circle", ORANGE, "casualty DEL"), ("circle", GREEN, "casualty MIN"),
+            ("circle", GREY, "casualty EXP"), ("diamond", YELLOW, "mine"), ("square", RED, "hostile unit"),
+            ("cross", wcol, "weapon"), ("dot", (60, 140, 200), "debris"), ("zone", RED, "exclusion zone"),
+            ("ghost", (110, 110, 110), "not found yet"), ("drone", CYAN, "drone"),
+        ]
+        for i, (shape, col, label) in enumerate(entries):
+            y = ly + i * step
+            c = (lx + 8, y)
+            if shape == "circle":
+                cv2.circle(img, c, 7, col, -1)
+            elif shape == "diamond":
+                cv2.fillPoly(img, [np.array([(c[0], c[1] - 8), (c[0] + 8, c[1]), (c[0], c[1] + 8), (c[0] - 8, c[1])], np.int32)], col)
+            elif shape == "square":
+                cv2.rectangle(img, (c[0] - 7, c[1] - 7), (c[0] + 7, c[1] + 7), col, -1)
+            elif shape == "cross":
+                cv2.drawMarker(img, c, col, cv2.MARKER_TILTED_CROSS, 14, 2)
+            elif shape == "dot":
+                cv2.circle(img, c, 4, col, -1)
+            elif shape == "zone":
+                cv2.circle(img, c, 8, col, 2)
+            elif shape == "ghost":
+                cv2.circle(img, c, 7, col, 1)
+            else:
+                cv2.fillPoly(img, [np.array([(c[0] + 9, c[1]), (c[0] - 6, c[1] - 7), (c[0] - 6, c[1] + 7)], np.int32)], col)
+            self.text(img, label, (lx + 24, y + 6), WHITE, 0.45)
+        sb = 100.0
+        x_a, y_a = 16, h - 52
+        x_b = x_a + int(sb * sc)
+        half = (x_a + x_b) // 2
+        cv2.rectangle(img, (x_a, y_a - 4), (half, y_a + 4), WHITE, -1)
+        cv2.rectangle(img, (half, y_a - 4), (x_b, y_a + 4), (40, 40, 40), -1)
+        cv2.rectangle(img, (x_a, y_a - 4), (x_b, y_a + 4), WHITE, 1)
+        self.text(img, "0", (x_a - 4, y_a - 10), WHITE, 0.4)
+        self.text(img, "50", (half - 10, y_a - 10), WHITE, 0.4)
+        self.text(img, "100 m", (x_b - 22, y_a - 10), WHITE, 0.4)
+        self.text(img, "N", (14, 40), WHITE, 0.55)
+        cv2.arrowedLine(img, (19, 70), (19, 48), WHITE, 2, tipLength=0.4)
+        d = P(*self.pos)
+        a_ = math.radians(self.yaw)
+        tip = (int(d[0] + 12 * math.cos(a_)), int(d[1] - 12 * math.sin(a_)))
+        l = (int(d[0] + 7 * math.cos(a_ + 2.5)), int(d[1] - 7 * math.sin(a_ + 2.5)))
+        r = (int(d[0] + 7 * math.cos(a_ - 2.5)), int(d[1] - 7 * math.sin(a_ - 2.5)))
+        cv2.fillPoly(img, [np.array([tip, l, r], np.int32)], CYAN)
+        for e in self.delivered:
+            kp = P(*e["p"])
+            cv2.rectangle(img, (kp[0] - 4, kp[1] - 4), (kp[0] + 4, kp[1] + 4), (30, 30, 220), -1)
+            cv2.line(img, (kp[0] - 3, kp[1]), (kp[0] + 3, kp[1]), WHITE, 1)
+            cv2.line(img, (kp[0], kp[1] - 3), (kp[0], kp[1] + 3), WHITE, 1)
+        hp = P(*DEFAULTS["mission"]["home"])
+        cv2.drawMarker(img, hp, GREEN, cv2.MARKER_SQUARE, 10, 2)
+        self.text(img, "H", (hp[0] - 4, hp[1] + 20), GREEN, 0.45)
+        return img
+
+    def draw(self):
+        W, H = self.W, self.H
+        canvas = np.full((H, W, 3), 18, np.uint8)
+        vw, vh = 640, 480
+        if self.frame is not None:
+            view = cv2.resize(self.frame, (vw, vh))
+        else:
+            view = np.zeros((vh, vw, 3), np.uint8)
+            self.text(view, "NO VIDEO", (vw // 2 - 80, vh // 2), RED, 1.0, 2)
+        locked = None
+        cls_col = {"mine": YELLOW, "weapon": (220, 80, 220), "debris": (60, 140, 200), "hostile_unit": RED}
+        post_col = {"lying": RED, "sitting": ORANGE, "standing": GREEN, "waving": GREEN}
+        for src in ("jury", "team"):
+            dets, (iw, ih), ts = self.dets[src]
+            if time.time() - ts > 1.0:
+                continue
+            sx, sy = vw / iw, vh / ih
+            for d in dets:
+                x1, y1, x2, y2 = d["bbox"]
+                p1, p2 = (int(x1 * sx), int(y1 * sy)), (int(x2 * sx), int(y2 * sy))
+                attrs = d.get("attrs", {})
+                post = attrs.get("posture")
+                if d["class"] == "injured":
+                    col = CYAN if attrs.get("in_water") else post_col.get(post, CYAN)
+                    name = "PERSON IN WATER" if attrs.get("in_water") else f"INJURED {post.upper()}" if post else "INJURED"
+                else:
+                    col = cls_col.get(d["class"], WHITE)
+                    name = d["class"].replace("_", " ").upper()
+                self.target_box(view, p1, p2, col, f"{name} {int(100 * d['confidence'])}%", d["confidence"])
+                if d["class"] == "injured" and (locked is None or d["confidence"] > locked[2]):
+                    locked = ((p1[0] + p2[0]) // 2, (p1[1] + p2[1]) // 2, d["confidence"])
+        cx, cy = vw // 2, vh // 2
+        for (a1, b1), (a2, b2) in (((-25, 0), (-8, 0)), ((8, 0), (25, 0)), ((0, -25), (0, -8)), ((0, 8), (0, 25))):
+            cv2.line(view, (cx + a1, cy + b1), (cx + a2, cy + b2), GREEN, 1)
+        if locked:
+            x, y, _ = locked
+            cv2.circle(view, (x, y), 30, YELLOW, 1, cv2.LINE_AA)
+            cv2.line(view, (x - 40, y), (x - 32, y), YELLOW, 2)
+            cv2.line(view, (x + 32, y), (x + 40, y), YELLOW, 2)
+            cv2.line(view, (x, y - 40), (x, y - 32), YELLOW, 2)
+            cv2.line(view, (x, y + 32), (x, y + 40), YELLOW, 2)
+        self.text(view, "CAM  RGB  640x480  tilt 20", (10, vh - 12), GREY, 0.45)
+        recent = [e for ts, e in self.events if time.time() - ts < 6.0]
+        if recent:
+            e = recent[-1]
+            msg = f"MEDICAL KIT DROPPED  ->  {e.get('id', '?')}" if e.get("kind") == "kit" else str(e)
+            (tw, th), _ = cv2.getTextSize(msg, cv2.FONT_HERSHEY_DUPLEX, 0.8, 2)
+            bx = (vw - tw) // 2
+            cv2.rectangle(view, (bx - 14, 40), (bx + tw + 14, 40 + th + 20), (20, 20, 160), -1)
+            cv2.rectangle(view, (bx - 14, 40), (bx + tw + 14, 40 + th + 20), WHITE, 2)
+            cv2.putText(view, msg, (bx, 40 + th + 8), cv2.FONT_HERSHEY_DUPLEX, 0.8, WHITE, 2, cv2.LINE_AA)
+        canvas[56:56 + vh, 10:10 + vw] = view
+        cv2.rectangle(canvas, (10, 56), (10 + vw - 1, 56 + vh - 1), (70, 70, 70), 1)
+        mw, mh = W - vw - 30, H - 56 - 46
+        canvas[56:56 + mh, vw + 20:vw + 20 + mw] = self.map_view(mw, mh)
+        cv2.rectangle(canvas, (vw + 20, 56), (vw + 20 + mw - 1, 56 + mh - 1), (70, 70, 70), 1)
+        self.text(canvas, "TACTICAL MAP", (vw + 30, 80), GREEN, 0.6, 1)
+        st = self.state
+        phase = st.phase if st else "INIT"
+        mt = int(time.time() - self.t0)
+        cv2.rectangle(canvas, (0, 0), (W, 50), (28, 22, 16), -1)
+        cv2.line(canvas, (0, 50), (W, 50), (0, 160, 255), 2)
+        self.text(canvas, "SKYFORGE", (12, 36), (0, 170, 255), 0.75, 2)
+        self.text(canvas, f"T+{mt // 60:02d}:{mt % 60:02d}", (200, 36), YELLOW, 0.65, 2)
+        pc = PHASE_COLOR.get(phase, WHITE)
+        label = phase.replace("_", " ")
+        (pw_, ph_), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_DUPLEX, 0.85, 2)
+        cv2.rectangle(canvas, (340, 9), (340 + pw_ + 24, 43), pc, -1)
+        cv2.putText(canvas, label, (352, 35), cv2.FONT_HERSHEY_DUPLEX, 0.85, (15, 15, 15), 2, cv2.LINE_AA)
+        tgt = st.target_id if st and st.target_id else ""
+        self.text(canvas, f"TARGET {tgt if tgt else ('LOCKED' if locked else 'SEARCHING')}", (600, 36), GREEN if (tgt or locked) else ORANGE, 0.6, 2)
+        nconf = sum(1 for t in self.tracks if t.confirmed)
+        self.text(canvas, f"TRACKS {nconf}/{len(self.tracks)}  ZONES {len(self.zones)}", (960, 36), WHITE, 0.5, 1)
+        yb = 56 + vh + 26
+        items = [("ALT", f"{self.alt:4.1f} m"), ("SPD", f"{self.speed:3.1f} m/s"), ("HDG", f"{self.yaw % 360:3.0f}"),
+                 ("COV", f"{100 * st.coverage:3.0f} %" if st else "--"), ("KITS", f"{st.kits}" if st else "--"),
+                 ("DEC", f"{st.decision_ms:3.1f} ms" if st else "--")]
+        for i, (k, v) in enumerate(items):
+            x = 14 + i * 106
+            self.text(canvas, k, (x, yb), GREY, 0.5)
+            self.text(canvas, v, (x, yb + 26), WHITE, 0.6)
+        if st:
+            bw = vw - 8
+            frac = max(0.0, min(1.0, st.battery_pct / 100.0))
+            full = st.battery_wh / max(frac, 1e-3) if st.battery_wh > 0 else 1.0
+            thr = min(1.0, st.rth_threshold_wh / max(full, 1e-3))
+            yy = yb + 50
+            cv2.rectangle(canvas, (14, yy), (14 + bw, yy + 14), (70, 70, 70), -1)
+            cv2.rectangle(canvas, (14, yy), (14 + int(bw * frac), yy + 14), GREEN if frac > thr + 0.1 else ORANGE, -1)
+            cv2.line(canvas, (14 + int(bw * thr), yy - 4), (14 + int(bw * thr), yy + 18), RED, 2)
+            self.text(canvas, f"BATTERY {st.battery_pct:3.0f}%  {st.battery_wh:4.1f} Wh   RTH {st.rth_threshold_wh:4.1f} Wh", (14, yy + 36), WHITE, 0.5)
+        link = st.link_up if st else False
+        gnss = st.gnss_ok if st else False
+        nav = st.nav_source if st else "--"
+        bar = f"SYSTEM {'OPERATIONAL' if phase != 'MAYDAY' else 'MAYDAY'}  |  LINK {'UP' if link else 'LOST'}  |  GNSS {'OK' if gnss else 'DENIED'}  |  NAV {nav}"
+        self.text(canvas, bar, (vw + 30, H - 16), GREEN if (link and gnss and phase != "MAYDAY") else ORANGE, 0.55, 1)
+        out = Image()
+        out.header.stamp = self.get_clock().now().to_msg()
+        out.height, out.width, out.encoding, out.step = H, W, "rgb8", W * 3
+        out.data = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB).tobytes()
+        self.pub.publish(out)
+        if self.window:
+            try:
+                if not self.win_ready:
+                    cv2.namedWindow("SKYFORGE OPERATOR", cv2.WINDOW_NORMAL)
+                    cv2.resizeWindow("SKYFORGE OPERATOR", self.disp_w, int(self.disp_w * H / W))
+                    self.win_ready = True
+                cv2.imshow("SKYFORGE OPERATOR", canvas)
+                cv2.waitKey(1)
+            except cv2.error:
+                self.window = False
+
+
+def main():
+    rclpy.init()
+    n = Hud()
+    try:
+        rclpy.spin(n)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        n.destroy_node()
+        rclpy.try_shutdown()
+
+
+if __name__ == "__main__":
+    main()

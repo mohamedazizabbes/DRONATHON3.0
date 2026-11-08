@@ -1,0 +1,7 @@
+# Demo fault timeline (seconds after fault_injector start). Matches the 5-minute demo script.
+- {t: 70,  type: jam, on: true, dur_s: 20}          # LINK LOST -> autonomous, buffer, replay + resync
+- {t: 115, type: spoof, dx: 40, dy: 0, ramp_s: 8, dur_s: 25}   # GNSS spoof -> rejected, odometry
+- {t: 185, type: gust, wx: 5.0, wy: 3.0, dur_s: 30}  # RTH threshold jumps on the gauge
+# forged / replayed goal_update: from the ground station  ->  curl -X POST localhost:8080/forge ; curl -X POST localhost:8080/replay
+# motor failure -> MAYDAY: uncomment for the finale
+# - {t: 260, type: motor}

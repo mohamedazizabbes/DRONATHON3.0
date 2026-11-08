@@ -1,0 +1,8 @@
+.git
+runs
+models
+**/__pycache__
+**/*.pyc
+skyforge_ws/build
+skyforge_ws/install
+skyforge_ws/log

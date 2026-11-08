@@ -1,0 +1,22 @@
+[Unit]
+Description=SKYFORGE comm bridge (JSON link, HMAC, ring buffer, resync) - Dronathon F12
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=/opt/skyforge
+EnvironmentFile=/opt/skyforge/bridge.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m skyforge_core.comm.bridge --config /opt/skyforge/skyforge.yaml \
+    --brain-listen 0.0.0.0:14700 --brain-reply ${SKYFORGE_BRAIN_REPLY} \
+    --station ${SKYFORGE_STATION} --metrics-file /opt/skyforge/logs/bridge_metrics.jsonl
+Restart=always
+RestartSec=1
+# small, predictable footprint
+MemoryMax=128M
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

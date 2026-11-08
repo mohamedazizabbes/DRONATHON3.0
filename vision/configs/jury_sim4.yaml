@@ -1,0 +1,8 @@
+names: [mine, weapon, debris]
+split: {train: 0.8, val: 0.15, test: 0.05}
+sources:
+  - name: simj4
+    path: simgen/out_v4
+    class_map: {5: 0, 6: 1, 7: 2}
+    group_regex: '^(g\d+)_\d+$'
+    keep_background: 1.0
