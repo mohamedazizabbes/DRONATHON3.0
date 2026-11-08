@@ -56,6 +56,7 @@ class DroneState(TypedDict, total=False):
     retry_after: dict  # casualty id -> time a paused delivery may be retried
     abort_rounds: dict  # casualty id -> delivery rounds aborted
     sonar_requests: list  # input: [(mine track id, (x, y))] tentative magnetic contacts to confirm
+    mag_requests: list  # input: tentative magnetic contacts on land -> low magnetic inspection
     sonar_active: Optional[dict]  # current dipping-sonar task
     sonar_done: list  # finished / skipped sonar task ids
     replan: bool
@@ -119,6 +120,7 @@ def initial_state(params: dict, t: float = 0.0) -> DroneState:
         retry_after={},
         abort_rounds={},
         sonar_requests=[],
+        mag_requests=[],
         sonar_active=None,
         sonar_done=[],
         replan=True,

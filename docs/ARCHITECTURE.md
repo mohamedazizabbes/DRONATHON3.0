@@ -100,6 +100,94 @@ the intrinsics, the gimbal (with forward tilt) and the attitude, intersected wit
     inward veto, never as an escape manoeuvre. This puts recall first without letting false positives push the
     drone around.
 
+## PlannerAgent (`planning/agent.py`)
+
+The PlannerAgent from spec §3 is an explicit class. The LangGraph nodes keep the state machine and delegate
+every planning decision to it:
+
+- prioritisation (F6 score + energy gate, duplicate / kit-marked / likely-deceased exclusion);
+- drift intercept points;
+- A* paths with tiered margins;
+- RTH threshold and energy calibration;
+- survey-task standoff points.
+
+**Energy model (F11).** The reflex commands a *ground* velocity, so the model does too:
+`v_air = |v_g·u − w|`, capped at `v_air_max` (in a strong headwind the ground speed drops), and
+`P(v_air) = scale·p_hover·(1 + k·v_air²)`. `scale` is **calibrated online** from the measured battery drain
+(EMA, bounded), so a wrong paper power budget is corrected in flight. In the low-battery test the
+return-energy error went from 109% to 22% (conservative side), and `scale` converged to the airframe's real
+draw.
+
+**Evasive manoeuvres.** Threat-aware, never targeting:
+- inside a hostile unit's line-of-sight ring, the path first **exits radially** (shortest way out);
+- A* then continues with the ×10 line-of-sight cost;
+- waypoints still inside a ring are flown at `planner.evasive_alt` (15 m) to reduce exposure.
+
+## FLIR triage: injured first, likely deceased never gets a kit
+
+| Category | Evidence | U |
+|---|---|---|
+| IMMEDIATE | in water without flotation (**always**, even with cold skin: possible hypothermia), or warm + immobile > 10 s + lying | 1.0 |
+| DELAYED | warm, lying/sitting, moving; or cool but moving | 0.7 |
+| MINOR | warm, standing/waving | 0.3 |
+| EXPECTANT | skin below the warm threshold, immobile, breathing seen or not yet assessed | 0.1 |
+| **DCD** (likely deceased) | on land, skin within 2 K of ambient, immobile, **no breathing micro-motion for ≥ 8 s at close range** | 0.0 |
+
+- Post-mortem cooling (about 1 K/h) is too slow to measure in flight, so death is never inferred from a
+  cooling rate.
+- Before releasing a kit to an EXPECTANT casualty, the drone holds a **10 s assessment hover** at 5 m. If they
+  turn out DCD, the delivery aborts and the kit is kept for the living.
+- The DCD position is reported to the station for recovery. The drone never declares death.
+
+## Drift under a changing sea
+
+- **Sea-state estimator** (`perception/sea_state.py`): learns the surface current online from every observed
+  floating track, inverse-variance weighted, with wind leeway removed.
+- New floating tracks start from it, and unseen floating tracks are re-centred on it, so a tide change moves
+  every predicted intercept point.
+- **Long-baseline learning:** re-acquiring a drifting object after a gap gives displacement ÷ time, the mean
+  drift over the gap. That is far better than frame-to-frame velocity under waves (simulated: ±0.6 m orbital
+  motion, 7 s period).
+- **Kit marking:** the kit pod carries an IR strobe that is visible in FLIR, so a casualty seen with a kit is
+  served, whatever its drift history. This removed the last off-target drop, which came from a tide change
+  the drone could not observe.
+- Delivery to a drifting casualty: during the final approach the waypoint follows the target every tick, with
+  a velocity lead. Aborted deliveries are paused and retried, never silently abandoned.
+
+## Mine detection in three layers
+
+| Layer | Sensor | Finds | Method |
+|---|---|---|---|
+| 1 | camera (jury module) | surface, beach, floating | 2D→3D, 3-of-5 confirmation |
+| 2 | magnetometer on a boom, 10 Hz | shallow submerged / buried | background EMA → anomaly event → **dipole inversion**: grid search over (x, y, depth), weighted least-squares amplitude, σ ∝ distance / SNR, single-pass ambiguity declared, known sources peeled off |
+| 3 | dipping sonar (winch, hover at 3 m) | deep submerged | **survey stations** over water + **confirmation dips** for tentative magnetic contacts; range / bearing / depth |
+
+- **Fusion:** one mine track per mine records the layers that saw it and its depth. A magnetic anomaly on a
+  known weapon is attributed to that weapon. Repeated consistent magnetic events confirm. Non-visual
+  contacts are exempt from camera misses (a camera can never see them).
+- **Land contacts** cannot use sonar, so they get a **close-range magnetic inspection**: hover at 10 m beside
+  the contact, then re-invert.
+- **Standoff rule:** every dip and inspection happens **outside a ring around the contact** (submerged-mine
+  radius + margin), never above a suspected mine. The standoff is re-computed if zones move.
+- **Safety accounting:** entering a *registered* zone counts as a violation. Overflying a mine before any
+  sensor could know it is reported separately (`hidden_overflights_before_detection`).
+
+## MAYDAY handover (sim and ROS)
+
+`brain/handover.py` is the single resume path, used by both the simulator and the ROS nodes:
+- The station saves `mayday_snapshot.json`, reassembled from < 1 KB fragments.
+- Drone 2 is launched with `resume_snapshot:=mayday_snapshot.json`. It inherits casualties (served ones
+  kit-marked), zones, coverage and lane index, goes **straight to TRIAGE**, and serves the inherited
+  casualties immediately.
+
+## Jury ground station and weather
+
+- **Ground station:** the jury provides it (spec §3). `comm.station_auth: none` accepts unsigned station
+  messages and normalises foreign layouts and command names (waypoint, rth, no_fly, météo...). Forgery
+  protection is then off, and this is logged. HMAC stays the default.
+- **Weather:** PX4's wind estimate has priority. Otherwise a station `{"type":"weather","wind":[x,y],"visibility":v}`
+  goal is republished on `/skyforge/wind` and `/skyforge/visibility`; otherwise the `weather` defaults apply.
+
 ## Communication (no agent): `comm/`
 
 - Signed compact JSON, HMAC-SHA256 truncated to 8 bytes, with `seq` and boot id. Every message is < 1 KB,
@@ -145,3 +233,21 @@ Each item came out of a failure found in the 2D simulator, not out of theory:
 10. **Ramp-resistant spoof detection** with estimate rollback. The single-step innovation test in the plan
     missed a 5 m/s ramp completely.
 11. **Tiered planner margins.** RTH must never be left without a path because of a hysteresis band.
+12. **Ground-speed energy model + online calibration.** A strong headwind no longer collapses the RTH
+    estimate, and the paper power budget is corrected in flight.
+13. **FLIR DCD category with assessment hover;** cold skin in water stays IMMEDIATE. This also fixed a bug
+    where a cold casualty in water was ranked EXPECTANT.
+14. **Sea-state estimator, long-baseline drift learning, kit marking, delivery that follows the target.**
+15. **Three-layer mine detection** with standoff-only dips and inspections. Fixes found along the way:
+    - camera misses no longer delete non-visual contacts;
+    - zones that move re-derive the standoff;
+    - survey tasks finish before RTB;
+    - two magnetic sources are no longer merged into one track.
+16. **Descend-last reflex rule:** low transits over water had made a floating mine invisible.
+17. **ROS fixes found by review:** Track attributes now cross the ROS boundary (`attrs_json`), the comm
+    replays proactively on reconnect, and handover resume works in ROS.
+
+**Conception impact:** the gimbal needs a 20° forward tilt. The kit pod needs an **IR strobe** (identifies
+served casualties). Add a **magnetometer on a boom** away from the motors (fluxgate, ~0.15 nT noise) and a
+**winched dipping sonar** (about 60 m range). The battery and power values must be measured; the online
+calibration absorbs the rest.

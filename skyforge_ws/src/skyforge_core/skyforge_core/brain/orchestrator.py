@@ -41,7 +41,7 @@ class Orchestrator:
     INPUT_KEYS = (
         "t", "pos", "vel", "rpy", "armed", "battery_wh", "battery_pct", "link_up", "link_quality",
         "gnss_ok", "nav_source", "wind", "visibility", "casualties", "zones", "new_tracks", "health_fault",
-        "sonar_requests",
+        "sonar_requests", "mag_requests",
     )
 
     def __init__(self, params: dict, log: Optional[MissionLog] = None, engine: Optional[str] = None):

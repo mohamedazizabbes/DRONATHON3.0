@@ -53,6 +53,7 @@ class MagAnomalyDetector:
         self.tau_bg = float(mp["bg_tau_s"])
         self.close_s = float(mp["close_s"])
         self.fit_r = float(mp["fit_radius_m"])
+        self.w_sigma = float(mp.get("fit_weight_sigma_m", 20.0))
         self.grid_half = float(mp["grid_half_m"])
         self.grid_step = float(mp["grid_step_m"])
         self.depths = np.arange(0.0, float(mp["max_depth_m"]) + 1e-6, float(mp["depth_step_m"]))
@@ -62,6 +63,11 @@ class MagAnomalyDetector:
         self.event: Optional[dict] = None
         self._t: Optional[float] = None
         self.contacts: list[MagContact] = []
+        self.known: dict[str, tuple[float, float, float, float]] = {}  # key -> (x, y, depth, A): sources already explained
+
+    def register(self, key: str, pos, depth: float, amplitude: float) -> None:
+        """Remember an accepted source so its field is peeled off before fitting new anomalies."""
+        self.known[key] = (float(pos[0]), float(pos[1]), float(depth), float(amplitude))
 
     @property
     def threshold(self) -> float:
@@ -106,7 +112,14 @@ class MagAnomalyDetector:
         S = np.array([s for s in self.samples if math.hypot(s[1] - peak_xy[0], s[2] - peak_xy[1]) <= self.fit_r])
         if len(S) < 8:
             return None
-        xs, ys, hs, a = S[:, 1], S[:, 2], S[:, 3], S[:, 4]
+        xs, ys, hs, a = S[:, 1], S[:, 2], S[:, 3], S[:, 4].copy()
+        # peel: subtract the modelled field of sources already explained elsewhere
+        # (a nearby second mine or a weapon would otherwise bias this single-dipole fit)
+        for kx, ky, kd, kA in self.known.values():
+            if math.hypot(kx - peak_xy[0], ky - peak_xy[1]) > 8.0:
+                a -= kA / ((xs - kx) ** 2 + (ys - ky) ** 2 + (hs + kd) ** 2) ** 1.5
+        # proximity weights: samples far from the peak may carry a neighbour's field
+        w = np.exp(-((xs - peak_xy[0]) ** 2 + (ys - peak_xy[1]) ** 2) / (2.0 * self.w_sigma ** 2))
         g = np.arange(-self.grid_half, self.grid_half + 1e-6, self.grid_step)
         cx = peak_xy[0] + g
         cy = peak_xy[1] + g
@@ -117,13 +130,13 @@ class MagAnomalyDetector:
         for d in self.depths:
             r3 = (dx2 + dy2 + ((hs + d) ** 2)[None, None, :]) ** 1.5
             f = 1.0 / r3
-            A = (f * a).sum(-1) / (f * f).sum(-1)  # closed-form LS amplitude per candidate
-            res = ((a - A[..., None] * f) ** 2).sum(-1)
+            A = (w * f * a).sum(-1) / (w * f * f).sum(-1)  # closed-form weighted-LS amplitude per candidate
+            res = (w * (a - A[..., None] * f) ** 2).sum(-1)
             i = np.unravel_index(int(np.argmin(res)), res.shape)
             if res[i] < best[0]:
                 best = (float(res[i]), (float(cx[i[0]]), float(cy[i[1]]), float(d), float(A[i])))
         res, (bx, by, bd, bA) = best
-        ss = float((a * a).sum())
+        ss = float((w * a * a).sum())
         r2 = 1.0 - res / ss if ss > 0 else 0.0
         if r2 < self.min_r2 or bA * np.sign(a[np.argmax(np.abs(a))]) <= 0:
             return None

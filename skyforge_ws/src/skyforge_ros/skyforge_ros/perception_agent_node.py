@@ -74,6 +74,8 @@ class PerceptionAgentNode(Node):
         self.create_subscription(MagneticField, "/sensors/mag", self.on_mag, QOS_SENSOR)
         self.create_subscription(String, "/sensors/sonar", self.on_sonar, 10)
         self.pub_sonar_req = self.create_publisher(String, "/perception/sonar_requests", 10)
+        self.pub_mag_req = self.create_publisher(String, "/perception/mag_requests", 10)
+        self.create_subscription(String, "/perception/mag_inspect", self.on_mag_inspect, 10)
         self.create_timer(0.1, self.publish)  # 10 Hz outputs, prediction between frames
         self._info_logged = False
 
@@ -138,6 +140,13 @@ class PerceptionAgentNode(Node):
         if tr is not None:
             self.get_logger().info(f"magnetic contact -> {tr.id} at ({tr.pos[0]:.1f},{tr.pos[1]:.1f}) layers {tr.attrs.get('layers')}")
 
+    def on_mag_inspect(self, m: String):
+        """Orchestrator finished a close-range magnetic inspection hover: re-invert with all samples."""
+        d = json.loads(m.data)
+        tr = self.agent.mag_reinspect(d.get("track", ""), now_s(self))
+        if tr is not None:
+            self.get_logger().info(f"magnetic inspection -> {tr.id} confirmed={tr.confirmed} conf {tr.conf:.2f}")
+
     def on_sonar(self, m: String):
         """{"stamp": s, "contacts": [{"range": m, "bearing": rad ENU, "depth": m, "strength": 0..1}]}"""
         try:
@@ -160,6 +169,7 @@ class PerceptionAgentNode(Node):
         prov = [Zone(f"P{i}", "provisional", c, r, source="provisional") for i, (c, r) in enumerate(self.agent.provisional_zones())]
         self.pub_prov.publish(zones_msg(prov, stamp))
         self.pub_sonar_req.publish(String(data=json.dumps([[i, list(p)] for i, p in self.agent.sonar_requests()])))
+        self.pub_mag_req.publish(String(data=json.dumps([[i, list(p)] for i, p in self.agent.mag_requests()])))
 
 
 def main():

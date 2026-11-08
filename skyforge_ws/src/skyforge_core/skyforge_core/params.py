@@ -54,6 +54,9 @@ DEFAULTS: dict[str, Any] = {
         "gate_m": 3.0,
         "gate_sigma_k": 2.0,
         "gate_max_m": 8.0,  # association gate never exceeds this (no track swallows a neighbour)
+        "gate_min_m": 0.8,
+        "gate_per_alt": 0.12,  # minimum gate = clamp(0.12 * altitude, 0.8, gate_m)
+        "confirm_min_conf": {"injured": 0.4, "hostile_unit": 0.35},  # mean detector confidence to confirm
         # re-identification of STALE confirmed tracks (not seen for reid_stale_s):
         # gate = min(reid_max_m, 3 sigma + reid_base_m). Drifting casualties keep their id.
         "reid_stale_s": 5.0,
@@ -197,7 +200,8 @@ DEFAULTS: dict[str, Any] = {
         "k_sigma": 6.0,  # event threshold = k_sigma * noise
         "bg_tau_s": 60.0,
         "close_s": 1.0,
-        "fit_radius_m": 45.0,
+        "fit_radius_m": 35.0,
+        "fit_weight_sigma_m": 20.0,  # Gaussian proximity weight around the anomaly peak
         "grid_half_m": 30.0,
         "grid_step_m": 2.0,
         "max_depth_m": 20.0,
@@ -208,6 +212,9 @@ DEFAULTS: dict[str, Any] = {
         "weapon_attribution_m": 5.0,  # a ferrous anomaly on a known weapon is the weapon, not a mine
         "confirm_events": 2,  # ... or this many independent, consistent magnetic events
         "min_event_conf": 0.25,
+        "inspect": True,  # land contacts (no sonar): low magnetic inspection beside the contact
+        "inspect_alt": 10.0,
+        "inspect_dwell_s": 3.0,
     },
     # Mine detection layer 3: dipping sonar (winched transducer, drone hovering low over water)
     "sonar": {

@@ -323,6 +323,7 @@ class MissionSim:
             "wind": tuple(self.world.wind), "visibility": self.world.visibility,
             "casualties": d.agent.casualties(), "zones": d.agent.zones(), "new_tracks": new_tracks, "health_fault": fault,
             "sonar_requests": d.agent.sonar_requests(),
+            "mag_requests": d.agent.mag_requests(),
         }
         old_wps = st.get("waypoints")
         prev_phase = st["phase"]
@@ -360,6 +361,10 @@ class MissionSim:
                 contacts = self.world.sonar_ping(d.pos, self.p["sonar"]["range_m"])
                 for tr in d.agent.add_sonar_ping(d.pos[:2], contacts, t):
                     self.say(f"[{t:7.1f}s] {d.name} SONAR       contact -> {tr.id} depth {tr.attrs.get('depth')} m layers {tr.attrs.get('layers')}")
+            elif a["type"] == "mag_inspect":  # mine layer 2, close range
+                tr = d.agent.mag_reinspect(a["track"], t)
+                if tr is not None:
+                    self.say(f"[{t:7.1f}s] {d.name} MAG         inspection -> {tr.id} confirmed={tr.confirmed} conf {tr.conf:.2f}")
             elif a["type"] == "disarm":
                 d.armed = False
 

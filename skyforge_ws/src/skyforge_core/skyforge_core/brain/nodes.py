@@ -289,7 +289,7 @@ class Brain:
         # Re-enter triage when a pending casualty (newly) qualifies, e.g. its
         # category was upgraded to IMMEDIATE after 10 s immobile.
         sig = self._triage_sig(s)
-        if self._preempt_needed(s) and (sig != s.get("triage_sig") or s["t"] - s.get("triage_t", -1e9) > 10.0):
+        if s.get("station_goal") is None and self._preempt_needed(s) and (sig != s.get("triage_sig") or s["t"] - s.get("triage_t", -1e9) > 10.0):
             # quiet feasibility check first: only leave exploration for a casualty we can serve
             if self.triage(s, only_urgent=self._urgent_only(s)).best is not None:
                 u.update(self._transition(s, Phase.TRIAGE, "casualty pending (policy %s)" % self._policy(s), ev))
@@ -352,7 +352,27 @@ class Brain:
         for rid, p in s.get("sonar_requests", []):
             if f"R{rid}" not in done:
                 tasks.append({"id": f"R{rid}", "p": tuple(p), "why": f"confirm magnetic contact {rid}", "contact": tuple(p)})
+        if self.p["magnetic"].get("inspect", True):
+            for rid, p in s.get("mag_requests", []):
+                if f"G{rid}" not in done:
+                    tasks.append({"id": f"G{rid}", "p": tuple(p), "why": f"magnetic inspection of land contact {rid}",
+                                  "contact": tuple(p), "kind": "mag", "track": rid})
         return tasks
+
+    def _task_point(self, s: DroneState, t: dict):
+        """Standoff for a survey task. Requests around a TENTATIVE contact (no zone yet) never
+        go above it: ring of radius submerged-mine safety + margin, on the drone's side."""
+        sp = self.p["sonar"]
+        tgt = t.get("contact")
+        if tgt is None:
+            return self.agent.standoff(s, t["target"] if "target" in t else t["p"], sp["standoff_extra_m"])
+        R = self.p["zones"]["safety_submerged_mine"] + self.agent.margin(s) + sp["standoff_extra_m"]
+        d = dist2(s["pos"], tgt)
+        ux, uy = ((s["pos"][0] - tgt[0]) / d, (s["pos"][1] - tgt[1]) / d) if d > 1e-3 else (1.0, 0.0)
+        return self.agent.standoff(s, (tgt[0] + ux * R, tgt[1] + uy * R), sp["standoff_extra_m"])
+
+    def _task_alt(self, t: dict) -> float:
+        return self.p["magnetic"]["inspect_alt"] if t.get("kind") == "mag" else self.p["sonar"]["dip_alt"]
 
     def _sonar_step(self, s: DroneState, ev: list, u: dict, coverage_done: bool) -> Optional[dict]:
         """Run / pick a dipping-sonar task. Returns the goal to fly, or None."""
@@ -361,14 +381,37 @@ class Brain:
             return None
         act = s.get("sonar_active")
         done = list(s.get("sonar_done", []))
+        if act is not None and s["t"] - act.get("last_t", act["t0"]) > 1.0:
+            # the task was interrupted (e.g. an IMMEDIATE casualty): its timeout restarts on resume
+            act = {**act, "t0": s["t"], "dwell_t": None}
         if act is not None:
-            near = dist2(s["pos"], act["p"]) <= 2.5 and s["pos"][2] <= sp["dip_alt"] + 0.8
+            act = {**act, "last_t": s["t"]}
+        if act is not None and act.get("dwell_t") is None and self.agent.in_zone(s, act["p"]):
+            # zones move (drifting mines): re-derive the standoff from the original target
+            stand = self._task_point(s, act)
+            if stand is None:
+                ev.append(self._ev(s, "dec", f"sonar task {act['id']} skipped: no safe standoff any more", decision="sonar_skip"))
+                u["sonar_done"], u["sonar_active"] = done + [act["id"]], None
+                return None
+            act = {**act, "p": stand}
+            ev.append(self._ev(s, "dec", f"sonar task {act['id']}: standoff moved to ({stand[0]:.0f},{stand[1]:.0f}) (zone moved)",
+                               decision="sonar_task"))
+        if act is not None:
+            near = dist2(s["pos"], act["p"]) <= 2.5 and s["pos"][2] <= self._task_alt(act) + 0.8
             if near and act.get("dwell_t") is None:
                 act = {**act, "dwell_t": s["t"]}
-            if act.get("dwell_t") is not None and s["t"] - act["dwell_t"] >= sp["dwell_s"]:
-                u["actions"] = list(s.get("actions", [])) + [{"type": "sonar_ping", "task": act["id"], "p": tuple(s["pos"][:2])}]
-                ev.append(self._ev(s, "dec", f"SONAR dip {act['id']} ({act['why']}) at ({s['pos'][0]:.0f},{s['pos'][1]:.0f}): ping",
-                                   decision="sonar", task=act["id"]))
+            dwell = self.p["magnetic"]["inspect_dwell_s"] if act.get("kind") == "mag" else sp["dwell_s"]
+            if act.get("dwell_t") is not None and not near:
+                act = {**act, "dwell_t": None}  # drifted off the task point: dwell restarts
+            if act.get("dwell_t") is not None and s["t"] - act["dwell_t"] >= dwell:
+                if act.get("kind") == "mag":
+                    u["actions"] = list(s.get("actions", [])) + [{"type": "mag_inspect", "task": act["id"], "track": act["track"]}]
+                    ev.append(self._ev(s, "dec", f"MAG inspection {act['id']} ({act['why']}) at {self._task_alt(act):.0f} m: re-invert",
+                                       decision="mag_inspect", task=act["id"]))
+                else:
+                    u["actions"] = list(s.get("actions", [])) + [{"type": "sonar_ping", "task": act["id"], "p": tuple(s["pos"][:2])}]
+                    ev.append(self._ev(s, "dec", f"SONAR dip {act['id']} ({act['why']}) at ({s['pos'][0]:.0f},{s['pos'][1]:.0f}): ping",
+                                       decision="sonar", task=act["id"]))
                 u["sonar_done"], u["sonar_active"] = done + [act["id"]], None
                 return None
             if s["t"] - act["t0"] > sp["task_timeout_s"]:
@@ -376,22 +419,23 @@ class Brain:
                 u["sonar_done"], u["sonar_active"] = done + [act["id"]], None
                 return None
             u["sonar_active"] = act
-            return self._goal("sonar_dip", act["p"], sp["dip_alt"], id=act["id"])
+            return self._goal("sonar_dip", act["p"], self._task_alt(act), id=act["id"])
         best = None
         for t in self._sonar_tasks(s):
-            stand = self.agent.standoff(s, t["p"], sp["standoff_extra_m"])
+            stand = self._task_point(s, t)
             if stand is None:
                 continue
             d = dist2(s["pos"], stand)
             if (coverage_done or d <= sp["task_radius_m"]) and (best is None or d < best[0]):
-                best = (d, {**t, "p": stand})
+                best = (d, {**t, "target": t["p"], "p": stand})  # keep the original station / contact
         if best is None:
             return None
         act = {**best[1], "t0": s["t"], "dwell_t": None}
-        ev.append(self._ev(s, "dec", f"SONAR task {act['id']}: {act['why']}, dip at standoff ({act['p'][0]:.0f},{act['p'][1]:.0f})",
+        ev.append(self._ev(s, "dec", f"{'MAG' if act.get('kind') == 'mag' else 'SONAR'} task {act['id']}: {act['why']}, "
+                                     f"standoff ({act['p'][0]:.0f},{act['p'][1]:.0f})",
                            decision="sonar_task", task=act["id"]))
         u["sonar_active"] = act
-        return self._goal("sonar_dip", act["p"], sp["dip_alt"], id=act["id"])
+        return self._goal("sonar_dip", act["p"], self._task_alt(act), id=act["id"])
 
     def h_detect(self, s: DroneState) -> dict:
         ev: list = []
@@ -453,8 +497,12 @@ class Brain:
                 u.update(self._transition(s, Phase.EXPLORE, f"{why}, area left", ev))
             else:
                 why = "none feasible" if res.ranked else "no casualty pending"
-                u.update(self._transition(s, Phase.RETURN_BASE, f"{why}, coverage complete", ev))
-                u["rth_reason"] = "mission_complete"
+                if self._sonar_tasks(s) or s.get("sonar_active"):
+                    # finish pending sonar dips / magnetic inspections before going home
+                    u.update(self._transition(s, Phase.EXPLORE, f"{why}, coverage complete, survey tasks pending", ev))
+                else:
+                    u.update(self._transition(s, Phase.RETURN_BASE, f"{why}, coverage complete", ev))
+                    u["rth_reason"] = "mission_complete"
         u["events"] = ev
         return u
 
@@ -524,7 +572,7 @@ class Brain:
                     return u
         elif near < 4.0 and seen_age > 4.0:
             step = search_step_from_sigma(tr.sigma, self.p["planner"]["search_step"])
-            tgt["search"] = expanding_square(point, step, self.p["planner"]["search_legs"])[1:]
+            tgt["search"] = [q for q in expanding_square(point, step, self.p["planner"]["search_legs"])[1:] if not self.in_zone(s, q)]
             tgt["search_t"] = s["t"]
             ev.append(self._ev(s, "dec", f"{tr.id} not at predicted point, expanding-square search (step {step:.0f}m)",
                                decision="search"))
@@ -698,6 +746,13 @@ class Brain:
                 u.update(self._transition(s, Phase.TRIAGE, "target unreachable", ev))
             elif goal["kind"] == "station_goto":
                 u["station_goal"] = None
+            elif goal["kind"] == "search" and s.get("target") and s["target"].get("search"):
+                tgt = dict(s["target"])
+                tgt["search"] = tgt["search"][1:]
+                u["target"] = tgt
+            elif goal["kind"] == "sonar_dip" and s.get("sonar_active"):
+                u["sonar_done"] = list(s.get("sonar_done", [])) + [s["sonar_active"]["id"]]
+                u["sonar_active"] = None
             # hold position meanwhile (the reflex keeps us safe)
             u["waypoints"] = [(s["pos"][0], s["pos"][1], max(s["pos"][2], 2.0))]
             u["path_goal"] = None

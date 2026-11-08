@@ -77,6 +77,17 @@ parse_detections(open("sample.json").read())     # -> list[Detection]
 | `/skyforge/obstacles` | `String` JSON `[{"p":[x,y],"r":4,"v":[vx,vy],"h":9}]` | 10 Hz | moving obstacle tracker / sim → reflex |
 | `/fmu/in/trajectory_setpoint`, `/fmu/in/offboard_control_mode`, `/fmu/in/vehicle_command` | `px4_msgs` | 50 Hz | reflex_node → PX4 |
 | `/metrics` | `Metric` | 1 Hz | metrics_node → dashboard |
+| `/sensors/mag` | `sensor_msgs/MagneticField` (tesla) | ~10 Hz | magnetometer driver / sim → perception agent (mine layer 2) |
+| `/sensors/sonar` | `String` JSON `{"stamp", "contacts":[{"range","bearing"(rad ENU),"depth","strength"}]}` | per dip | sonar driver → perception agent (mine layer 3) |
+| `/payload/sonar_cmd` | `String` JSON `{type:"sonar_ping", task, p}` | per dip | orchestrator → sonar winch/driver |
+| `/perception/sonar_requests`, `/perception/mag_requests` | `String` JSON `[[track_id,[x,y]],...]` | 10 Hz | perception agent → orchestrator (tentative contacts to confirm) |
+| `/perception/mag_inspect` | `String` JSON `{track}` | per inspection | orchestrator → perception agent (re-invert after a close-range hover) |
+| `/skyforge/visibility` | `std_msgs/Float32` (0..1) | on change | station weather → all |
+| `/skyforge/obstacles` (from `obstacle_relay`) | `String` JSON | 10 Hz | Gazebo model poses → reflex |
+
+`Track.attrs_json` carries the attributes that decisions depend on (`likely_deceased`, `marked`, mine
+`layers` and `depth`, `category_why`, `detection_radius`). Without it the ROS orchestrator would not know
+that a casualty already has a kit, or is likely deceased.
 
 PX4 rules:
 - `reflex_node` is the **only** node that touches `px4_msgs`, and the only place NED↔ENU conversion
@@ -131,6 +142,15 @@ Otherwise the message is dropped and logged as `forged_rejected` / `replay_rejec
 | `{"type":"zone_add","zone":{"id":"NOFLY1","center":[x,y],"radius":r}}` | add a no-fly zone |
 | `{"type":"zone_clear","id":"NOFLY1"}` | remove a station zone |
 | `{"type":"priority","id":"C4"}` | serve this casualty next if feasible (override is logged) |
+| `{"type":"weather","wind":[x,y],"visibility":0.6}` | jury weather, republished on `/skyforge/wind` and `/skyforge/visibility` |
+
+**Jury station compatibility (`comm.station_auth: none`):**
+- Unsigned station messages are accepted, and foreign layouts are normalised: `t` may be
+  `goal` / `goal_update` / `cmd`, the body may be `g` / `goal` / inline, and `cmd` / `action` / `type` are mapped.
+- Command aliases: `waypoint` → `goto`, `rth` / `return` / `retour_base` → `rtb`, `no_fly` → `zone_add`,
+  `météo` → `weather`, `position` / `target` → `p`.
+- Forgery protection is OFF in this mode, and the first unsigned message logs a warning. Use it only if the
+  jury's station cannot sign.
 
 Every update is applied in the decision tick where it arrives. The node also ticks immediately on receipt,
 so reaction time is the measured `reaction_ms`. **Safety lock:** during MAYDAY or a battery-forced RTH, only

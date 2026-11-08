@@ -75,6 +75,9 @@ class OrchestratorNode(Node):
         self.create_subscription(String, "/perception/sonar_requests",
                                  lambda m: self.inputs.__setitem__("sonar_requests", [(i, tuple(p)) for i, p in json.loads(m.data)]), 10)
         self.pub_sonar = self.create_publisher(String, "/payload/sonar_cmd", QOS_RELIABLE)
+        self.create_subscription(String, "/perception/mag_requests",
+                                 lambda m: self.inputs.__setitem__("mag_requests", [(i, tuple(p)) for i, p in json.loads(m.data)]), 10)
+        self.pub_mag_inspect = self.create_publisher(String, "/perception/mag_inspect", QOS_RELIABLE)
         self.pub_path = self.create_publisher(Path, "/plan/waypoints", QOS_RELIABLE)
         self.pub_state = self.create_publisher(MissionState, "/mission/state", 10)
         self.pub_ev = self.create_publisher(MissionEvent, "/mission/events", QOS_RELIABLE)
@@ -188,6 +191,8 @@ class OrchestratorNode(Node):
                 self.pub_release.publish(String(data=jdump(a)))
             elif a["type"] == "sonar_ping":  # winch the transducer down, ping, publish /sensors/sonar
                 self.pub_sonar.publish(String(data=jdump(a)))
+            elif a["type"] == "mag_inspect":  # close-range samples are in: perception re-inverts
+                self.pub_mag_inspect.publish(String(data=jdump(a)))
             elif a["type"] == "mayday":
                 self.pub_snap.publish(String(data=jdump(a["snapshot"])))
         if inp["t"] - self._last_snap_t >= 5.0:  # keep a fresh snapshot latched for sync

@@ -11,6 +11,29 @@ agents, **PerceptionAgent** and **PlannerAgent**, drive the drone with no human 
 - keep the mission alive through jamming, GNSS spoofing, forged commands and motor failure;
 - come home before the battery runs out.
 
+## What the brain does (highlights)
+
+- **Triage with FLIR:** START categories from heat, breathing micro-motion, posture and motion. Injured are
+  served first. A **likely deceased** casualty (skin at ambient, no breathing for 8 s at close range, on land)
+  never takes a kit and is reported for recovery. Cold skin **in water** stays IMMEDIATE (hypothermia).
+- **Drift prediction:** a Kalman filter per floating object, plus an **online sea-current estimator**
+  (it follows a tide change) and long-baseline learning when an object is re-found. The **kit's IR strobe**
+  marks served casualties, so nobody gets two kits.
+- **Return home on time:** a wind-triangle energy model at commanded ground speed, **calibrated online**
+  from the battery drain, with a dynamic RTH threshold recomputed every tick.
+- **Evasive manoeuvres:** exit a hostile unit's line of sight radially, fly lower inside it, replan.
+  Hostile units are always zones to avoid, never targets.
+- **MAYDAY:** a motor or sensor fault sends a fragmented snapshot. **Drone 2** resumes from it in the
+  simulator or in ROS (`resume_snapshot:=`).
+- **Mines in three layers:**
+  - **camera** for surface mines;
+  - **magnetometer** for shallow and buried mines (dipole inversion, plus a close-range inspection on land);
+  - **dipping sonar** for deep mines (survey stations plus confirmation dips).
+  
+  Always from a standoff, never above a suspected mine.
+- **Link resilience:** signed JSON < 1 KB, a 512-message ring buffer, replay and resync, compatibility mode
+  for the jury's station, weather from the station or PX4.
+
 ## Repository
 
 | Path | What |
@@ -102,6 +125,11 @@ These are simulator numbers. Re-measure in Gazebo/PX4 with the real detectors be
     them with a 60 s hover and a 60 s cruise.
   - The gimbal needs a **20° forward tilt**, so the camera sees mines before entering their 15 m zone.
   - Set `mission.kits` to the number of kits the payload pod carries.
+  - The **kit pod needs an IR strobe** (FLIR-visible), so served casualties are recognised after drifting.
+  - Add a **magnetometer on a boom**, away from the motors (fluxgate, about 0.15 nT noise), publishing
+    `/sensors/mag`.
+  - Add a **winched dipping sonar** (about 60 m range), commanded on `/payload/sonar_cmd` and publishing
+    `/sensors/sonar`.
 - **Sim & Control:**
   - Bridge `/cam/rgb`, `/cam/thermal` and `camera_info`, run the XRCE agent, and publish moving obstacles on
     `/skyforge/obstacles`.

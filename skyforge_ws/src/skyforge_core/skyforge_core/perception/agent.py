@@ -129,14 +129,17 @@ class PerceptionAgent:
             sig = ground_sigma(u, v, alt, self.cam, self.pp["pixel_sigma"], self.pp["attitude_sigma_rad"])
             meas.append((d, g, sig))
 
-        # --- association: greedy nearest neighbour per class, gated
+        # --- association: greedy nearest neighbour per class, gated. The minimum gate
+        # scales with altitude (ground sample distance): at 3 m the whole image covers a
+        # few metres, a fixed 3 m gate would merge every random false positive into one track
+        gate_floor = min(self.pp["gate_m"], max(self.pp["gate_min_m"], self.pp["gate_per_alt"] * alt))
         pairs = []
         for mi, (d, g, sig) in enumerate(meas):
             for tid, s in self._tracks.items():
                 if s.track.cls != d.cls:
                     continue
                 dd = dist2(g, s.kf.pos)
-                gate = min(self.pp["gate_max_m"], max(self.pp["gate_m"], self.pp["gate_sigma_k"] * math.hypot(s.kf.sigma, sig)))
+                gate = min(self.pp["gate_max_m"], max(gate_floor, self.pp["gate_sigma_k"] * math.hypot(s.kf.sigma, sig)))
                 if dd <= gate:
                     pairs.append((dd, mi, tid))
         pairs.sort()
@@ -256,7 +259,8 @@ class PerceptionAgent:
             s.track.attrs["detection_radius"] = float(d.attrs["detection_radius"])
 
     def _check_confirm(self, s: _TrackState) -> None:
-        if not s.track.confirmed and sum(s.hist) >= self.pp["confirm_hits"]:
+        min_conf = self.pp["confirm_min_conf"].get(s.track.cls, 0.0)
+        if not s.track.confirmed and sum(s.hist) >= self.pp["confirm_hits"] and s.track.conf >= min_conf:
             s.track.confirmed = True
             self._new_confirmed.append(s.track)
 
@@ -388,12 +392,16 @@ class PerceptionAgent:
         c = self.mag.add_sample(t, sensor_pos, total_field_nt)
         if c is None:
             return None
+        return self._apply_mag_contact(c, t)
+
+    def _apply_mag_contact(self, c, t: float) -> Optional[Track]:
         # a new inversion uses every sample around the anomaly (superset of the previous
         # passes): it SUPERSEDES an earlier tentative magnetic estimate nearby
         for s in self._tracks.values():
             tr = s.track
             if (tr.cls == Cls.MINE and tr.attrs.get("layers") == ["mag"]
-                    and dist2(s.kf.pos, c.pos) <= self.p["magnetic"]["fit_radius_m"] * 0.8):
+                    and dist2(s.kf.pos, c.pos) <= self.p["magnetic"]["fit_radius_m"] * 0.8
+                    and dist2(s.kf.pos, c.pos) <= max(8.0, 3.0 * math.hypot(s.kf.sigma, c.sigma))):  # same source
                 # independent magnetic events that agree count as repeated evidence
                 agree = dist2(s.kf.pos, c.pos) <= max(6.0, 2.0 * math.hypot(s.kf.sigma, c.sigma))
                 tr.attrs["mag_events"] = tr.attrs.get("mag_events", 1) + (1 if agree else 0)
@@ -406,8 +414,11 @@ class PerceptionAgent:
                 if not tr.confirmed and (c.conf >= mp["confirm_conf"] or repeated):
                     tr.confirmed = True
                     self._new_confirmed.append(tr)
+                self.mag.register(tr.id, c.pos, c.depth, c.amplitude)
                 return tr
         tr = self.add_mine_contact("mag", c.pos, c.depth, c.sigma, c.conf, t)
+        # the source is explained (new mine, existing mine or a weapon): peel it from future fits
+        self.mag.register(tr.id if tr is not None else f"ferrous@{c.pos[0]:.0f},{c.pos[1]:.0f}", c.pos, c.depth, c.amplitude)
         if tr is not None:
             tr.attrs["single_pass"] = c.single_pass
         return tr
@@ -423,6 +434,25 @@ class PerceptionAgent:
             if tr is not None:
                 out.append(tr)
         return out
+
+    def mag_requests(self) -> list[tuple[str, tuple[float, float]]]:
+        """Tentative magnetic contacts on LAND (sonar impossible): ask for a low magnetic inspection."""
+        if not self.p["magnetic"].get("inspect", True):
+            return []
+        return [(s.track.id, s.kf.pos) for s in self._tracks.values()
+                if s.track.cls == Cls.MINE and not s.track.confirmed and s.track.attrs.get("layers") == ["mag"]
+                and not in_any_polygon(s.kf.pos, self.water)]
+
+    def mag_reinspect(self, tid: str, t: float) -> Optional[Track]:
+        """After an inspection hover: re-invert with every sample around the contact (incl. close range)."""
+        st = self._tracks.get(tid)
+        if self.mag is None or st is None:
+            return None
+        near = [abs(x[4]) for x in self.mag.samples if dist2((x[1], x[2]), st.kf.pos) <= self.mag.fit_r]
+        if not near:
+            return None
+        c = self.mag.invert(st.kf.pos, max(near), t)
+        return self._apply_mag_contact(c, t) if c is not None else None
 
     def sonar_requests(self) -> list[tuple[str, tuple[float, float]]]:
         """Tentative magnetic mine contacts that need a sonar dip to confirm/deny."""
