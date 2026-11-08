@@ -46,6 +46,46 @@ class PlannerAgent:
         self.grid = GridPlanner(area, self.pp["grid_res"], margin=40.0, max_expansions=self.pp["max_expansions"])
         self.coverage = CoverageGrid(area, 2.0)
         self.lanes = lawnmower(area, self.mp["cruise_alt"], cam["hfov_deg"], cam["lane_overlap"], self.home)
+        self.sonar_stations = self._sonar_stations(area)
+
+    def _sonar_stations(self, area: dict) -> list[tuple[float, float]]:
+        """Dipping-sonar survey stations over water, ~station_spacing apart (layer 3)."""
+        sp = self.p.get("sonar", {})
+        if not sp.get("enabled") or not sp.get("survey"):
+            return []
+        from ..geometry import in_any_polygon
+
+        step = sp["station_spacing_m"] / 2.0
+        water = self.p["water"]["polygons"]
+        cands = []
+        y = area["ymin"] + step / 2
+        while y <= area["ymax"]:
+            x = area["xmin"] + step / 2
+            while x <= area["xmax"]:
+                if in_any_polygon((x, y), water):
+                    cands.append((x, y))
+                x += step
+            y += step
+        out = []
+        for c in sorted(cands, key=lambda p: (p[0], p[1])):
+            if all(dist2(c, o) >= sp["station_spacing_m"] * 0.9 for o in out):
+                out.append(c)
+        return out
+
+    def standoff(self, s, target, extra: float = 0.0):
+        """Closest point to `target` that is outside every hard zone (sonar dips, inspections)."""
+        if not self.in_zone(s, target):
+            return tuple(target)
+        pos = s["pos"]
+        best = None
+        for c, r in self.hard_circles(s, extra):
+            if dist2(target, c) < r:
+                d = dist2(pos, c) or 1e-6
+                ux, uy = (pos[0] - c[0]) / d, (pos[1] - c[1]) / d  # on the drone's side
+                cand = (c[0] + ux * (r + 0.5), c[1] + uy * (r + 0.5))
+                if not self.in_zone(s, cand) and (best is None or dist2(cand, target) < dist2(best, target)):
+                    best = cand
+        return best
 
     # --------------------------------------------------------------- safety
     def margin(self, s) -> float:

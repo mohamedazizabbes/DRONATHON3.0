@@ -305,6 +305,12 @@ class Brain:
                 u["events"] = ev
                 return u
 
+        sonar = self._sonar_step(s, ev, u, coverage_done=False)
+        if sonar is not None:
+            u["current_goal"] = sonar
+            u["events"] = ev
+            return u
+
         idx = s.get("explore_idx", 0)
         circles = self.hard_circles(s)
         while idx < len(self.lanes):
@@ -318,6 +324,11 @@ class Brain:
                 break
         u["explore_idx"] = idx
         if idx >= len(self.lanes) or s.get("coverage", 0.0) >= self.mp["coverage_target"]:
+            sonar = self._sonar_step(s, ev, u, coverage_done=True)  # finish remaining dips first
+            if sonar is not None:
+                u["current_goal"] = sonar
+                u["events"] = ev
+                return u
             why = f"coverage {100 * s.get('coverage', 0):.0f}% complete"
             if self.pending(s):
                 u.update(self._transition(s, Phase.TRIAGE, why + ", casualties pending", ev))
@@ -328,6 +339,57 @@ class Brain:
             u["current_goal"] = self._goal("explore", self.lanes[idx], self.mp["cruise_alt"], idx=idx)
         u["events"] = ev
         return u
+
+    # ------------------------------------------------ mine layer 3: dipping sonar
+    def _sonar_tasks(self, s: DroneState) -> list[dict]:
+        sp = self.p["sonar"]
+        if not sp["enabled"]:
+            return []
+        done = set(s.get("sonar_done", []))
+        tasks = [{"id": f"S{i}", "p": p, "why": "survey station"} for i, p in enumerate(self.agent.sonar_stations) if f"S{i}" not in done]
+        for rid, p in s.get("sonar_requests", []):
+            if f"R{rid}" not in done:
+                tasks.append({"id": f"R{rid}", "p": tuple(p), "why": f"confirm magnetic contact {rid}", "contact": tuple(p)})
+        return tasks
+
+    def _sonar_step(self, s: DroneState, ev: list, u: dict, coverage_done: bool) -> Optional[dict]:
+        """Run / pick a dipping-sonar task. Returns the goal to fly, or None."""
+        sp = self.p["sonar"]
+        if not sp["enabled"]:
+            return None
+        act = s.get("sonar_active")
+        done = list(s.get("sonar_done", []))
+        if act is not None:
+            near = dist2(s["pos"], act["p"]) <= 2.5 and s["pos"][2] <= sp["dip_alt"] + 0.8
+            if near and act.get("dwell_t") is None:
+                act = {**act, "dwell_t": s["t"]}
+            if act.get("dwell_t") is not None and s["t"] - act["dwell_t"] >= sp["dwell_s"]:
+                u["actions"] = list(s.get("actions", [])) + [{"type": "sonar_ping", "task": act["id"], "p": tuple(s["pos"][:2])}]
+                ev.append(self._ev(s, "dec", f"SONAR dip {act['id']} ({act['why']}) at ({s['pos'][0]:.0f},{s['pos'][1]:.0f}): ping",
+                                   decision="sonar", task=act["id"]))
+                u["sonar_done"], u["sonar_active"] = done + [act["id"]], None
+                return None
+            if s["t"] - act["t0"] > sp["task_timeout_s"]:
+                ev.append(self._ev(s, "dec", f"sonar task {act['id']} skipped (timeout)", decision="sonar_skip"))
+                u["sonar_done"], u["sonar_active"] = done + [act["id"]], None
+                return None
+            u["sonar_active"] = act
+            return self._goal("sonar_dip", act["p"], sp["dip_alt"], id=act["id"])
+        best = None
+        for t in self._sonar_tasks(s):
+            stand = self.agent.standoff(s, t["p"], sp["standoff_extra_m"])
+            if stand is None:
+                continue
+            d = dist2(s["pos"], stand)
+            if (coverage_done or d <= sp["task_radius_m"]) and (best is None or d < best[0]):
+                best = (d, {**t, "p": stand})
+        if best is None:
+            return None
+        act = {**best[1], "t0": s["t"], "dwell_t": None}
+        ev.append(self._ev(s, "dec", f"SONAR task {act['id']}: {act['why']}, dip at standoff ({act['p'][0]:.0f},{act['p'][1]:.0f})",
+                           decision="sonar_task", task=act["id"]))
+        u["sonar_active"] = act
+        return self._goal("sonar_dip", act["p"], sp["dip_alt"], id=act["id"])
 
     def h_detect(self, s: DroneState) -> dict:
         ev: list = []

@@ -15,6 +15,7 @@ from typing import Optional
 from ..geometry import dist2, in_any_polygon
 from ..domain import DANGER_CLASSES, Cls, Detection, Start, Track, URGENCY, Zone
 from .drift import DriftKF
+from .magnetic import MagAnomalyDetector
 from .sea_state import SeaStateEstimator
 from .projection import Camera, ground_sigma, in_view, pixel_to_ground
 from .start_triage import classify
@@ -47,6 +48,7 @@ class PerceptionAgent:
         self._t = 0.0
         self.wind = (0.0, 0.0)
         self.sea = SeaStateEstimator(self.dp["current"], self.dp["k_leeway"], self.dp.get("sea_tau_s", 30.0))
+        self.mag = MagAnomalyDetector(params) if params["magnetic"]["enabled"] else None
         self.stats = {"frames": 0, "dets_in": 0, "dets_low_conf": 0, "dets_no_ground": 0, "tracks_created": 0, "tracks_deleted": 0}
 
     # ------------------------------------------------------------------ io
@@ -150,6 +152,9 @@ class PerceptionAgent:
         for tid, s in list(self._tracks.items()):
             if tid in used_t:
                 continue
+            layers = s.track.attrs.get("layers")
+            if layers and "vision" not in layers:
+                continue  # magnetometer / sonar contact: the camera cannot see it, a camera miss is no evidence
             if alt > 2.0 and in_view((*s.kf.pos, 0.0), pos, rpy, self.cam, margin_px=10):
                 s.hist.append(0)
                 s.miss_streak += 1
@@ -169,8 +174,8 @@ class PerceptionAgent:
                 tr = s.track
                 if tid in used_t or tr.cls != d.cls or not tr.confirmed or stamp - tr.last_seen < pp["reid_stale_s"]:
                     continue
-                if tr.floating != in_any_polygon(g, self.water):
-                    continue  # water/land status must match
+                if tr.floating != in_any_polygon(g, self.water) and dist2(g, s.kf.pos) > 10.0:
+                    continue  # water/land status must match (except right at the shoreline: washed ashore)
                 gmax = pp["reid_max_floating_m"] if tr.floating else pp["reid_max_m"]
                 gate = min(gmax, 3.0 * s.kf.sigma + pp["reid_base_m"])
                 dd = dist2(g, s.kf.pos)
@@ -312,12 +317,118 @@ class PerceptionAgent:
             tr = s.track
             if tr.cls not in DANGER_CLASSES or not tr.confirmed:
                 continue
-            base = tr.attrs.get("detection_radius", self.zp["safety"][tr.cls]) if tr.cls == Cls.HOSTILE else self.zp["safety"][tr.cls]
+            if tr.cls == Cls.HOSTILE:
+                base = tr.attrs.get("detection_radius", self.zp["safety"][tr.cls])
+            elif tr.cls == Cls.MINE and tr.attrs.get("submerged"):
+                base = self.zp["safety_submerged_mine"]
+            else:
+                base = self.zp["safety"][tr.cls]
             sig_term = min(self.zp["sigma_k"] * s.kf.sigma, self.zp["max_sigma_term_m"])
             r = base + sig_term + self.zp["wind_k"] * wind + extra_margin
             soft = r * self.zp["los_factor"] if tr.cls == Cls.HOSTILE else 0.0
             out.append(Zone(f"Z{tr.id}", tr.cls, s.kf.pos, r, s.kf.vel, soft))
         return out
+
+    # ------------------------------------------------- mine layers 2 and 3
+    def add_mine_contact(self, layer: str, pos, depth: float, sigma: float, conf: float, stamp: float) -> Optional[Track]:
+        """Fuse a magnetometer ("mag") or sonar ("sonar") contact into the mine tracks.
+
+        - a magnetic anomaly on a known weapon is the weapon (ferrous), not a mine;
+        - otherwise associate to an existing mine track (any layer) or create one;
+        - strong contacts confirm on their own, weak magnetic ones stay tentative
+          and are turned into sonar-dip requests by the brain."""
+        mp, sp = self.p["magnetic"], self.p["sonar"]
+        if layer == "mag":
+            for s in self._tracks.values():
+                if s.track.cls == Cls.WEAPON and s.track.confirmed and dist2(s.kf.pos, pos) <= mp["weapon_attribution_m"]:
+                    s.track.attrs.setdefault("layers", [])
+                    if "mag" not in s.track.attrs["layers"]:
+                        s.track.attrs["layers"].append("mag")
+                    return None
+        best, best_d = None, 1e9
+        for s in self._tracks.values():
+            if s.track.cls != Cls.MINE:
+                continue
+            d = dist2(s.kf.pos, pos)
+            if d <= max(4.0, 3.0 * math.hypot(s.kf.sigma, sigma)) and d < best_d:
+                best, best_d = s, d
+        need = mp["confirm_conf"] if layer == "mag" else sp["confirm_conf"]
+        if best is None:
+            in_water = in_any_polygon(pos, self.water)
+            kf = DriftKF(pos, max(sigma, 0.5), False)  # bottom / moored mine: static
+            tid = f"M{self._next[Cls.MINE]}"
+            self._next[Cls.MINE] += 1
+            tr = Track(tid, Cls.MINE, tuple(pos), sigma, (0.0, 0.0), conf, 1, False, stamp, stamp, False)
+            tr.attrs.update(layers=[layer], depth=round(depth, 1), submerged=depth > 0.5, in_water=in_water)
+            best = _TrackState(tr, kf, self.pp["confirm_window"])
+            self._tracks[tid] = best
+            self.stats["tracks_created"] += 1
+        else:
+            best.kf.update(pos, max(sigma, 0.5))
+            tr = best.track
+            tr.hits += 1
+            tr.conf = max(tr.conf, conf)
+            tr.last_seen = stamp
+            layers = tr.attrs.setdefault("layers", ["vision"])
+            if layer not in layers:
+                layers.append(layer)
+            if "depth" not in tr.attrs or layer == "sonar":  # sonar gives the best depth
+                tr.attrs["depth"] = round(depth, 1)
+                tr.attrs["submerged"] = depth > 0.5
+            self._sync(best)
+        if not tr.confirmed and (conf >= need or len(tr.attrs.get("layers", [])) >= 2):
+            tr.confirmed = True
+            self._new_confirmed.append(tr)
+        return tr
+
+    def add_mag_sample(self, t: float, sensor_pos, total_field_nt: float) -> Optional[Track]:
+        """Layer 2 input: one magnetometer sample (sensor_pos = x, y, height above surface)."""
+        if self.mag is None:
+            return None
+        c = self.mag.add_sample(t, sensor_pos, total_field_nt)
+        if c is None:
+            return None
+        # a new inversion uses every sample around the anomaly (superset of the previous
+        # passes): it SUPERSEDES an earlier tentative magnetic estimate nearby
+        for s in self._tracks.values():
+            tr = s.track
+            if (tr.cls == Cls.MINE and tr.attrs.get("layers") == ["mag"]
+                    and dist2(s.kf.pos, c.pos) <= self.p["magnetic"]["fit_radius_m"] * 0.8):
+                # independent magnetic events that agree count as repeated evidence
+                agree = dist2(s.kf.pos, c.pos) <= max(6.0, 2.0 * math.hypot(s.kf.sigma, c.sigma))
+                tr.attrs["mag_events"] = tr.attrs.get("mag_events", 1) + (1 if agree else 0)
+                s.kf = DriftKF(c.pos, max(c.sigma, 0.5), False)
+                tr.attrs.update(depth=round(c.depth, 1), single_pass=c.single_pass)
+                tr.conf, tr.last_seen, tr.hits = max(c.conf, tr.conf), t, tr.hits + 1
+                self._sync(s)
+                mp = self.p["magnetic"]
+                repeated = tr.attrs["mag_events"] >= mp["confirm_events"] and c.conf >= mp["min_event_conf"]
+                if not tr.confirmed and (c.conf >= mp["confirm_conf"] or repeated):
+                    tr.confirmed = True
+                    self._new_confirmed.append(tr)
+                return tr
+        tr = self.add_mine_contact("mag", c.pos, c.depth, c.sigma, c.conf, t)
+        if tr is not None:
+            tr.attrs["single_pass"] = c.single_pass
+        return tr
+
+    def add_sonar_ping(self, dip_pos, contacts, stamp: float) -> list[Track]:
+        """Layer 3 input: contacts of one sonar dip, each {range, bearing (rad, ENU), depth, strength}."""
+        out = []
+        sig = self.p["sonar"]["range_sigma_m"]
+        for c in contacts:
+            r, b = float(c["range"]), float(c["bearing"])
+            pos = (dip_pos[0] + r * math.cos(b), dip_pos[1] + r * math.sin(b))
+            tr = self.add_mine_contact("sonar", pos, float(c.get("depth", 5.0)), sig + 0.02 * r, float(c.get("strength", 0.8)), stamp)
+            if tr is not None:
+                out.append(tr)
+        return out
+
+    def sonar_requests(self) -> list[tuple[str, tuple[float, float]]]:
+        """Tentative magnetic mine contacts that need a sonar dip to confirm/deny."""
+        return [(s.track.id, s.kf.pos) for s in self._tracks.values()
+                if s.track.cls == Cls.MINE and not s.track.confirmed and "mag" in s.track.attrs.get("layers", [])
+                and in_any_polygon(s.kf.pos, self.water)]  # sonar only works in water
 
     def provisional_zones(self) -> list[tuple[tuple[float, float], float]]:
         """Unconfirmed danger detections as (center, safety radius) for the REFLEX

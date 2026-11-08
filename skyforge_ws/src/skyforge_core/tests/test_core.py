@@ -475,3 +475,59 @@ def test_mayday_handover_resumes_in_triage(P, tmp_path):
     assert tracks["C1"].attrs.get("marked") and not tracks["C2"].attrs.get("marked")
     s = o2.tick({"t": 0.1, "armed": True, "pos": (0.0, 0.0, 25.0), "battery_wh": 60.0, "casualties": ag2.casualties()})
     assert s["phase"] == Phase.NAVIGATE and s["target"]["id"] == "C2"  # INIT -> TRIAGE -> NAVIGATE, skips the served one
+
+
+# ----------------------------------------------------- mine layers 2 and 3
+def _mag_passes(P, mine=(0.0, 10.0), depth=3.0, lanes=(0.0, 34.0), k=4e4, seed=1):
+    import random
+
+    from skyforge_core.perception.magnetic import MagAnomalyDetector
+
+    rng = random.Random(seed)
+    det, t, out = MagAnomalyDetector(P), 0.0, []
+    for lane_y in lanes:
+        for i in range(600):
+            t += 0.1
+            x = -180 + 0.6 * i
+            r2 = (x - mine[0]) ** 2 + (lane_y - mine[1]) ** 2 + (25 + depth) ** 2
+            c = det.add_sample(t, (x, lane_y, 25.0), 45000 + k / r2 ** 1.5 + rng.gauss(0, 0.15))
+            if c:
+                out.append(c)
+    return out
+
+
+def test_magnetometer_two_pass_inversion_and_single_pass_flag(P):
+    cs = _mag_passes(P)
+    assert cs[0].single_pass and cs[0].sigma > 5.0  # one lane: side/depth ambiguity is declared
+    best = cs[-1]
+    assert not best.single_pass and math.hypot(best.pos[0], best.pos[1] - 10.0) < 3.0  # two lanes: resolved
+
+
+def test_mag_contact_on_weapon_is_attributed_not_a_mine(P):
+    ag = PerceptionAgent(P)
+    w = Track("W1", Cls.WEAPON, (40.0, 75.0), 1.0, confirmed=True)
+    from skyforge_core.perception.agent import _TrackState
+
+    ag._tracks["W1"] = _TrackState(w, DriftKF((40.0, 75.0), 1.0, False), 5)
+    assert ag.add_mine_contact("mag", (42.0, 76.0), 0.0, 3.0, 0.9, 1.0) is None
+    assert not [t for t in ag.tracks() if t.cls == Cls.MINE] and "mag" in w.attrs["layers"]
+
+
+def test_non_visual_mine_contact_survives_camera_and_confirms_on_repeat(P):
+    ag = PerceptionAgent(P)
+    tr = ag.add_mine_contact("mag", (5.0, 3.0), 0.3, 4.0, 0.3, 1.0)  # weak, tentative
+    assert tr is not None and not tr.confirmed
+    for k in range(10):  # the camera looks right at it and sees nothing: must NOT delete it
+        ag.process([], (5.0, 3.0, 25.0), (0.0, 0.0, 0.0), 2.0 + 0.2 * k)
+    assert any(t.id == tr.id for t in ag.tracks())
+
+
+def test_sonar_ping_geometry_and_confirmation(P):
+    ag = PerceptionAgent(P)
+    out = ag.add_sonar_ping((100.0, -45.0), [{"range": 30.0, "bearing": math.pi, "depth": 12.0, "strength": 0.8},
+                                             {"range": 20.0, "bearing": 0.0, "depth": 5.0, "strength": 0.3}], 1.0)
+    strong, weak = out
+    assert strong.pos == pytest.approx((70.0, -45.0), abs=1e-6) and strong.confirmed and strong.attrs["submerged"]
+    assert not weak.confirmed  # rock-like weak return never confirms alone
+    z = [z for z in ag.zones() if z.id == f"Z{strong.id}"][0]
+    assert z.radius >= P["zones"]["safety_submerged_mine"]

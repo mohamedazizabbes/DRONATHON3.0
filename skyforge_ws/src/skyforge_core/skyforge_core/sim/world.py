@@ -46,6 +46,10 @@ DEFAULT_SCENARIO = {
         {"id": "T-mine-beach", "cls": "mine", "p": [92, 18], "size": 0.6},
         {"id": "T-mine-float", "cls": "mine", "p": [150, -40], "size": 0.8, "floating": True},
         {"id": "T-weapon", "cls": "weapon", "p": [40, 75], "size": 1.0},
+        # hidden mines: only the magnetometer (shallow / buried) or the dipping sonar (deep) can find them
+        {"id": "T-mine-shallow", "cls": "mine", "p": [60, -55], "size": 0.8, "depth": 3.0},
+        {"id": "T-mine-deep", "cls": "mine", "p": [175, -60], "size": 0.8, "depth": 12.0},
+        {"id": "T-mine-buried", "cls": "mine", "p": [140, 30], "size": 0.5, "depth": 0.3},
         {"id": "T-hostile", "cls": "hostile_unit", "p": [205, 82], "size": 2.0, "detection_radius": 20.0},
         # debris
         {"id": "T-debris1", "cls": "debris", "p": [70, -30], "size": 1.0, "floating": True},
@@ -104,7 +108,8 @@ class World:
         self.objects: list[TruthObject] = []
         for o in self.sc["objects"]:
             attrs = {k: v for k, v in o.items() if k not in ("id", "cls", "p", "size", "floating")}
-            fl = bool(o.get("floating", in_any_polygon(o["p"], self.water)))
+            # submerged / buried objects (depth > 0) are anchored: moored or bottom mines do not drift
+            fl = bool(o.get("floating", in_any_polygon(o["p"], self.water) and float(o.get("depth", 0.0)) <= 0.0))
             self.objects.append(TruthObject(o["id"], o["cls"], list(o["p"]), o.get("size", 1.0), fl, attrs))
         self.obstacles = [dict(o) for o in self.sc.get("obstacles", [])]
         self.movers = []
@@ -168,6 +173,8 @@ class World:
             return self._payloads(jury, team, cam)
         vis = self.visibility
         for o in self.objects:
+            if float(o.attrs.get("depth", 0.0)) > 0.0:
+                continue  # submerged / buried: invisible to the camera (layers 2-3)
             px = world_to_pixel((o.p[0], o.p[1], 0.0), pos, rpy, cam)
             if px is None or not (0 <= px[0] < cam.width and 0 <= px[1] < cam.height):
                 continue
@@ -210,6 +217,37 @@ class World:
             {"source": "jury", "image": [cam.width, cam.height], "objets": jury},
             {"source": "team", "image": [cam.width, cam.height], "detections": team},
         )
+
+    # ---------------------------------------------------- mine layers 2 and 3
+    MAG_K = {"mine": 4.0e4, "weapon": 3.0e3}  # dipole strength, nT * m^3
+
+    def mag_sample(self, pos) -> float:
+        """Total magnetic field (nT) at the sensor: Earth field + slow drift + ferrous objects + noise."""
+        b = 45000.0 + 0.5 * math.sin(2 * math.pi * self.t / 600.0)
+        for o in self.objects:
+            k = self.MAG_K.get(o.cls)
+            if k:
+                r2 = (o.p[0] - pos[0]) ** 2 + (o.p[1] - pos[1]) ** 2 + (max(pos[2], 0.5) + float(o.attrs.get("depth", 0.0))) ** 2
+                b += k / r2 ** 1.5
+        return b + self.rng.gauss(0.0, float(self.sc.get("mag_noise_nt", 0.15)))
+
+    def sonar_ping(self, pos, range_m: float = 60.0) -> list[dict]:
+        """Dipping sonar: works only hovering low over water; sees submerged objects within range."""
+        if pos[2] > 4.5 or not in_any_polygon(pos, self.water):
+            return []
+        out = []
+        for o in self.objects:
+            if o.cls == "mine" and float(o.attrs.get("depth", 0.0)) > 0.5 and in_any_polygon(o.p, self.water):
+                r = math.hypot(o.p[0] - pos[0], o.p[1] - pos[1])
+                if r <= range_m:
+                    out.append({"range": max(0.5, r + self.rng.gauss(0, 1.0)),
+                                "bearing": math.atan2(o.p[1] - pos[1], o.p[0] - pos[0]) + self.rng.gauss(0, 0.03),
+                                "depth": float(o.attrs["depth"]) + self.rng.gauss(0, 0.5),
+                                "strength": max(0.55, 0.95 - 0.4 * r / range_m)})
+        if self.rng.random() < 0.1:  # rock / clutter: weak contact (never confirms alone)
+            out.append({"range": self.rng.uniform(10, range_m), "bearing": self.rng.uniform(-math.pi, math.pi),
+                        "depth": self.rng.uniform(2, 15), "strength": 0.3})
+        return out
 
     def truth_of(self, cls: str) -> list[TruthObject]:
         return [o for o in self.objects if o.cls == cls]

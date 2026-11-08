@@ -150,7 +150,8 @@ DEFAULTS: dict[str, Any] = {
         "wind_ff_alpha": 0.05,
         "wind_ff_max": 4.0,
         "stale_plan_s": 1.5,
-        "climb_first_frac": 0.8,  # below this fraction of the target altitude: climb before transit
+        "climb_first_frac": 0.8,
+        "descend_radius_m": 3.0,  # only descend to a lower target within this horizontal distance  # below this fraction of the target altitude: climb before transit
         "boat_horizon_s": 2.0,
     },
     "comm": {
@@ -201,6 +202,8 @@ DEFAULTS: dict[str, Any] = {
         "max_samples": 6000,
         "confirm_conf": 0.6,  # stronger contacts confirm a mine on their own, weaker ones ask for a sonar dip
         "weapon_attribution_m": 5.0,  # a ferrous anomaly on a known weapon is the weapon, not a mine
+        "confirm_events": 2,  # ... or this many independent, consistent magnetic events
+        "min_event_conf": 0.25,
     },
     # Mine detection layer 3: dipping sonar (winched transducer, drone hovering low over water)
     "sonar": {
