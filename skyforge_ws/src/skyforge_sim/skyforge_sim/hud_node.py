@@ -35,7 +35,7 @@ def to_bgr(m):
 class Hud(Node):
     def __init__(self):
         super().__init__("hud")
-        self.declare_parameter("window", True)
+        self.declare_parameter("window", False)
         self.declare_parameter("display_width", 960)
         self.disp_w = int(self.get_parameter("display_width").value)
         self.win_ready = False
@@ -249,8 +249,8 @@ class Hud(Node):
         self.text(canvas, bar, (vw + 30, H - 16), GREEN if (link and gnss and phase != "MAYDAY") else ORANGE, 0.55, 1)
         out = Image()
         out.header.stamp = self.get_clock().now().to_msg()
-        out.height, out.width, out.encoding, out.step = H, W, "bgr8", W * 3
-        out.data = canvas.tobytes()
+        out.height, out.width, out.encoding, out.step = H, W, "rgb8", W * 3
+        out.data = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB).tobytes()
         self.pub.publish(out)
         if self.window:
             try:
