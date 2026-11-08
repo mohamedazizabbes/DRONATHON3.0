@@ -63,6 +63,16 @@ curl -X POST localhost:8080/replay                                      # reject
 `mission_log_*.jsonl` (in `runs/`) holds every decision with its inputs, all candidates and why the losers lost.
 `/mission/events` carries the same entries live for the dashboard.
 
+**Dashboard (Foxglove Studio → `ws://localhost:8765`):**
+
+| Panel | Source |
+|---|---|
+| 3D | `/viz/markers`: zones, line-of-sight rings, casualties coloured by START, drift ellipses, path, trail, phase |
+| Plot (RTH gauge) | `/mission/state.battery_wh` vs `/mission/state.rth_threshold_wh` |
+| Log (decision feed) | `/rosout` |
+| Plot | `/metrics` (p95 per layer) |
+| Raw Messages | `/comm/stats` (link, buffer, RTT, resync) and `/skyforge/nav` |
+
 ## Results (headless 2D simulator, default coastal scenario)
 
 10 seeded runs. The scenario has 5 casualties (2 IMMEDIATE, one of them drifting at sea), 2 mines (one floating),

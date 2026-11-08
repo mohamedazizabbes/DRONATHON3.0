@@ -172,10 +172,14 @@ def install():
         setattr(sys.modules[root], "msg", m)
         sys.modules[name] = m
 
-    pkg("std_msgs.msg", String=msg_type("String", data=""), Bool=msg_type("Bool", data=False),
+    pkg("std_msgs.msg", String=msg_type("String", data=""), Bool=msg_type("Bool", data=False), ColorRGBA=msg_type("ColorRGBA"),
         Float32=msg_type("Float32", data=0.0), Header=msg_type("Header"))
     pkg("geometry_msgs.msg", Twist=msg_type("Twist"), Vector3=msg_type("Vector3", x=0.0, y=0.0, z=0.0),
-        PoseStamped=msg_type("PoseStamped"))
+        PoseStamped=msg_type("PoseStamped"), Point=msg_type("Point", x=0.0, y=0.0, z=0.0))
+    marker = msg_type("Marker", points=[], text="")
+    for k, v in dict(ARROW=0, CUBE=1, SPHERE=2, CYLINDER=3, LINE_STRIP=4, TEXT_VIEW_FACING=9, ADD=0, DELETE=2, DELETEALL=3).items():
+        setattr(marker, k, v)
+    pkg("visualization_msgs.msg", Marker=marker, MarkerArray=msg_type("MarkerArray", markers=[]))
     pkg("nav_msgs.msg", Odometry=msg_type("Odometry"), Path=msg_type("Path", poses=[]))
     pkg("sensor_msgs.msg", BatteryState=msg_type("BatteryState", percentage=1.0, charge=0.0, capacity=0.0, cell_voltage=[]),
         CameraInfo=msg_type("CameraInfo"), NavSatFix=msg_type("NavSatFix"), Image=msg_type("Image"))

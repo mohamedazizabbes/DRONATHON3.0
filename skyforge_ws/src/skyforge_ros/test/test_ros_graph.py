@@ -55,11 +55,11 @@ def test_full_graph_closed_loop(cfg):
     Clock.t = 0.0
     Node.overrides = {"reflex_node": {"backend": "twist"}, "fault_injector": {"gnss_source": "navsatfix"},
                       "comm_node": {"mode": "local"}}
-    from skyforge_ros import comm_node, fault_injector, monitor_nodes, orchestrator_node, perception_agent_node, reflex_node
+    from skyforge_ros import comm_node, fault_injector, monitor_nodes, orchestrator_node, perception_agent_node, reflex_node, viz_node
 
     nodes = [reflex_node.ReflexNode(), orchestrator_node.OrchestratorNode(), perception_agent_node.PerceptionAgentNode(),
              comm_node.CommNode(), monitor_nodes.HealthNode(), monitor_nodes.NavIntegrityNode(), monitor_nodes.MetricsNode(),
-             fault_injector.FaultInjector()]
+             fault_injector.FaultInjector(), viz_node.VizNode()]
 
     world = World(cfg, DEFAULT_SCENARIO)
     from skyforge_core.perception.projection import Camera
@@ -148,6 +148,8 @@ def test_full_graph_closed_loop(cfg):
     assert gs.stats["rx"] > 50 and gs.detections, "station got no telemetry/detections over UDP"
     assert gs.resync_times, "no resync after the jam"
     assert orch.latency.pct(95) < 100.0
+    mk = Bus.last.get("/viz/markers")
+    assert mk is not None and any(m.ns == "tracks" for m in mk.markers) and any(m.ns == "zones" for m in mk.markers)
     lat = Bus.last.get("/metrics")
     assert lat is not None
     print(f"\nphase {orch.phase.value}, releases {len(releases)}, station rx {gs.stats['rx']}, "

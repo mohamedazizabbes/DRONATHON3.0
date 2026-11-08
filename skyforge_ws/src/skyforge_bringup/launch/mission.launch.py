@@ -31,6 +31,7 @@ def generate_launch_description():
         DeclareLaunchArgument("team_model", default_value=""),
         DeclareLaunchArgument("vision", default_value="true", description="start the two vision_node wrappers"),
         DeclareLaunchArgument("fault_script", default_value=""),
+        DeclareLaunchArgument("viz", default_value="true", description="publish /viz/markers for Foxglove"),
         DeclareLaunchArgument("use_sim_time", default_value="false",
                               description="true only if /clock is bridged from Gazebo, else all timers freeze"),
     ]
@@ -48,6 +49,7 @@ def generate_launch_description():
         node("health_node"),
         node("nav_integrity_node"),
         node("metrics_node"),
+        node("viz_node", condition=IfCondition(LaunchConfiguration("viz"))),
         node("fault_injector", extra={"gnss_source": LaunchConfiguration("gnss_source"),
                                       "script": LaunchConfiguration("fault_script")}),
         node("vision_node", name="jury_vision_node", condition=IfCondition(LaunchConfiguration("vision")),

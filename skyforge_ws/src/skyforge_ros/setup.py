@@ -27,6 +27,7 @@ setup(
             "metrics_node = skyforge_ros.monitor_nodes:metrics_main",
             "fault_injector = skyforge_ros.fault_injector:main",
             "vision_node = skyforge_ros.vision_node:main",
+            "viz_node = skyforge_ros.viz_node:main",
         ],
     },
 )

@@ -12,6 +12,7 @@
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
   <exec_depend>skyforge_interfaces</exec_depend>
   <exec_depend>skyforge_core</exec_depend>
   <!-- optional at runtime: px4_msgs (backend:=px4), ultralytics (vision_node) -->
