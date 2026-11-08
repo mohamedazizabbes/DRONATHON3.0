@@ -54,7 +54,7 @@ class Codec:
         return hmac.new(self.key, _canonical(msg), hashlib.sha256).hexdigest()[:16]
 
     def encode(self, t: str, body: dict, seq: int, ts: float) -> bytes:
-        msg: dict[str, Any] = {"v": self.version, "seq": seq, "ts": round(ts, 2), "b": self.boot_id, "t": t}
+        msg: dict[str, Any] = {"v": self.version, "seq": seq, "ts": round(ts, 3), "b": self.boot_id, "t": t}
         for k, v in body.items():
             if k in ENVELOPE:
                 raise ValueError(f"body key {k!r} collides with the envelope")

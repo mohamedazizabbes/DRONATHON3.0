@@ -104,9 +104,11 @@ class CommBridge:
         now = self.clock()
         kind = op.get("op")
         if kind == "send":
+            up = self.comm.link_up
             seqs = self.comm.send(op["t"], op.get("body", {}), now)
-            for s in seqs:
-                self.sent_at[s] = now
+            if up:  # RTT only for messages actually on the air (not buffered in an outage)
+                for s in seqs:
+                    self.sent_at[s] = now
             if len(self.sent_at) > 4096:
                 for k in sorted(self.sent_at)[:2048]:
                     del self.sent_at[k]
@@ -143,9 +145,11 @@ class CommBridge:
             self.to_brain({"op": "goal", "g": g})
         try:
             msg = json.loads(data)
-            if msg.get("t") == "ack" and int(msg.get("last", 0)) in self.sent_at:
-                self.rtt_ms.append((now - self.sent_at[int(msg["last"])]) * 1000.0)
-                self.rtt_ms = self.rtt_ms[-500:]
+            if msg.get("t") == "ack" and "e" in msg:
+                rtt = (now - float(msg["e"]) - float(msg.get("hd", 0.0))) * 1000.0
+                if 0.0 <= rtt < 5000.0 and self.comm.guard.last.get(msg.get("b")) == msg.get("seq"):
+                    self.rtt_ms.append(rtt)  # only for acks that passed HMAC + replay checks
+                    self.rtt_ms = self.rtt_ms[-500:]
         except (ValueError, TypeError):
             pass
         if self._resync_start is not None and before and not any(

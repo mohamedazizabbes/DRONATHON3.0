@@ -36,6 +36,7 @@ class GroundStation:
         self.resync_times: list[float] = []
         self.last_goal_bytes: Optional[bytes] = None
         self.stats = {"rx": 0, "dup": 0, "forged": 0, "gaps": 0, "frags": 0}
+        self._echo = None  # (sender ts, local receive time) of the newest message, for RTT
 
     # ---------------------------------------------------------------- rx
     def on_receive(self, data: bytes, now: float) -> None:
@@ -52,6 +53,8 @@ class GroundStation:
             self.stats["dup"] += 1
             return
         self.received.add(seq)
+        if seq > self.max_seen:
+            self._echo = (msg.get("ts"), now)
         self.max_seen = max(self.max_seen, seq)
         while self.contig + 1 in self.received:
             self.contig += 1
@@ -100,7 +103,11 @@ class GroundStation:
         return self.seq
 
     def send_ack(self, now: float) -> None:
-        data = self.codec.encode("ack", {"last": self.contig, "max": self.max_seen}, self._next(), now)
+        body = {"last": self.contig, "max": self.max_seen}
+        if self._echo and self._echo[0] is not None:
+            # NTP-style echo: sender timestamp + how long we held it -> sender computes RTT
+            body["e"], body["hd"] = self._echo[0], round(now - self._echo[1], 3)
+        data = self.codec.encode("ack", body, self._next(), now)
         self.transmit(data)
         self._last_ack_t = now
 
